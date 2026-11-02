@@ -1,8 +1,8 @@
 {
-  "name": "project-litmatrix",
-  "version": "0.1.0",
+  "name": "research-grid",
+  "version": "0.1.1",
   "private": true,
-  "description": "按研究项目组织文献分析的独立 Zotero 插件，基于 LitMatrix 1.1.0",
+  "description": "研矩：按研究项目组织中文文献分析的独立 Zotero 插件",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "test": "node --test tests/*.test.cjs",
@@ -10,5 +10,10 @@
   },
   "devDependencies": {
     "linkedom": "0.18.15"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liyanyi21/research-grid.git"
+  },
+  "homepage": "https://github.com/liyanyi21/research-grid"
 }

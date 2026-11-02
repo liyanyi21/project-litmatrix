@@ -1,4 +1,4 @@
-Project LitMatrix / 项目文献矩阵 v0.1.0
+ResearchGrid / 研矩 v0.1.1
 Copyright (c) 2026 liyanyi (project modifications)
 
 Based on LitMatrix 1.1.0 by bapungiri:
@@ -11,7 +11,10 @@ is copied from LitMatrix. The project identity, scoped repository, stable
 field codec, Chinese UI, CSV exporter, packaging and tests are modifications
 made on 2026-11-02. The original LitMatrix installation is not modified.
 
+Renamed from Project LitMatrix to ResearchGrid on 2026-11-02.
+The legacy add-on ID and data identifiers remain unchanged for upgrades.
+
 This work is licensed under GNU AGPL version 3 or (at your option) any later
 version. See LICENSE. Corresponding source is supplied in the adjacent
-project-litmatrix-0.1.0-source.zip and in this project directory.
+research-grid-0.1.1-source.zip and in this project directory.
 There is no automatic update endpoint. No external service is called by this plugin.

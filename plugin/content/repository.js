@@ -1,4 +1,4 @@
-/* Project LitMatrix. Zotero adapter inspired by LitMatrix 1.1.0. AGPL-3.0-or-later. */
+/* ResearchGrid. Zotero adapter inspired by LitMatrix 1.1.0. AGPL-3.0-or-later. */
 (function (root) {
   "use strict";
   class Repository {

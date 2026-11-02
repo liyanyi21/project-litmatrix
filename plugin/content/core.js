@@ -1,4 +1,4 @@
-/* Project LitMatrix, 2026-11-02. AGPL-3.0-or-later. */
+/* ResearchGrid, 2026-11-02. AGPL-3.0-or-later. */
 (function (root) {
   "use strict";
   const FIELDS = Object.freeze([
@@ -52,7 +52,7 @@
     return { doc, container, values, headings };
   }
   function createNote(projectName, values = {}) {
-    return `<div data-schema-version="9"><h1>项目文献矩阵 · ${escapeHTML(projectName)}</h1>` +
+    return `<div data-schema-version="9"><h1>研矩 · ${escapeHTML(projectName)}</h1>` +
       FIELDS.map(f => `<h2 data-plm-field="${f.id}">${f.label}</h2>${valueHTML(values[f.id] || "")}`).join("") + "</div>";
   }
   function updateNote(html, id, value, Parser = root.DOMParser) {

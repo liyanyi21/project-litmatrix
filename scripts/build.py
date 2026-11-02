@@ -22,14 +22,14 @@ if package["version"] != version:
     raise ValueError("package.json and manifest.json versions must match")
 dist = ROOT / "dist"
 dist.mkdir(exist_ok=True)
-target = dist / f"project-litmatrix-{version}.xpi"
+target = dist / f"research-grid-{version}.xpi"
 with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
     for path in sorted((ROOT / "plugin").rglob("*")):
         if path.is_file() and path.name != ".DS_Store":
             archive.write(path, path.relative_to(ROOT / "plugin").as_posix())
     for name in ["LICENSE", "NOTICE", "README.md"]:
         archive.write(ROOT / name, name)
-source = dist / f"project-litmatrix-{version}-source.zip"
+source = dist / f"research-grid-{version}-source.zip"
 with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
     # Explicit allowlist: never bundle local research exports or work logs.
     files = [ROOT / name for name in [
@@ -41,7 +41,7 @@ with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
     for path in sorted(files):
         if not path.is_file() or path.name == ".DS_Store" or "__pycache__" in path.parts:
             continue
-        archive.write(path, Path(f"project-litmatrix-{version}") / path.relative_to(ROOT))
+        archive.write(path, Path(f"research-grid-{version}") / path.relative_to(ROOT))
 checksums = "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in [target, source])
 (dist / "SHA256SUMS").write_text(checksums)
 print(target)

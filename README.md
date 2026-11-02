@@ -1,17 +1,17 @@
-# 项目文献矩阵 · Project LitMatrix
+# 研矩 · ResearchGrid
 
 基于 [LitMatrix 1.1.0](https://github.com/bapungiri/litmatrix/tree/v1.1.0) 的独立 Zotero 插件，使用 AGPL-3.0-or-later。可以与 LitMatrix 共存。
 
 ## 安装
 
-从本仓库 Releases 下载 `.xpi` 文件，在 Zotero 的“工具 → 插件”中点击齿轮，选择“Install Plugin From File…”。安装后无需卸载原版 LitMatrix。首次使用建议先选中一个分类。
+从 [Releases](https://github.com/liyanyi21/research-grid/releases/latest) 下载 `.xpi` 文件，在 Zotero 的“工具 → 插件”中点击齿轮，选择“Install Plugin From File…”。安装后无需卸载原版 LitMatrix。首次使用建议先选中一个分类。
 
 已在 macOS / Zotero 11.0-beta.3 实测，其他声明版本仍需要兼容性验证。详细记录见 [VALIDATION.md](VALIDATION.md)。
 
 ## 使用
 
 1. 在 Zotero 左侧选中一个分类。
-2. 选择“工具 → 项目文献矩阵”，或在分类右键菜单中选择“打开项目文献矩阵”。
+2. 选择“工具 → 研矩”，或在分类右键菜单中选择“打开研矩”。
 3. 矩阵默认列出当前分类及所有子分类里的文献，包括没有高亮或批注的文献。相同文献去重。
 4. 点击分析单元格，填写内容，再点击保存（或 Command/Ctrl + Enter）。取消保留原内容；修改内容后关闭会提示。
 5. 通过顶部项目下拉框切换分类，或返回 Zotero 选中另一个分类，再点击“使用当前分类”。
@@ -32,7 +32,7 @@
 - 项目身份由个人库/群组身份与分类 key 构成；分类改名或移动不会改变身份。
 - 同一文献可在多个项目拥有独立子笔记。文献即使移出分类，已经写下的项目子笔记仍保留。
 - 仅主动保存分析时创建或修改本插件的子笔记；不会改原有 LitMatrix 笔记、元数据或批注。
-- 子笔记标题为“项目文献矩阵 · 项目名”，以专用标签识别项目，以字段属性标识固定字段 ID。不要移除项目笔记上的 `_projectlitmatrix:v1:` 标签。
+- 子笔记标题为“研矩 · 项目名”，以专用标签识别项目，以字段属性标识固定字段 ID。不要移除项目笔记上的 `_projectlitmatrix:v1:` 标签。
 - 同项目存在重复笔记时阻止编辑，避免静默选错笔记；请在 Zotero 中合并。
 - 编辑保存前重新检查当前字段，检测其他窗口修改；发生冲突时保留输入并提示核对。
 - 笔记与其标签使用 Zotero 原生同步。显示偏好使用本地 Zotero Prefs，不承诺跨设备同步。
@@ -52,7 +52,7 @@ npm test
 npm run build
 ```
 
-构建依赖 Python 3 标准库；产物为 `dist/project-litmatrix-0.1.0.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
+构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.1.1.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
 
 ## 文件组织
 
@@ -68,3 +68,7 @@ npm run build
 ## 参与开发与许可
 
 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。基于 LitMatrix 1.1.0 改造，保留上游署名，按 [AGPL-3.0-or-later](LICENSE) 分发，具体来源与修改说明见 [NOTICE](NOTICE)。
+
+## 从旧版升级
+
+研矩是原 Project LitMatrix 的后续名称。安装新版 XPI 即可原位升级；插件内部 ID、项目笔记标签和字段 ID 保持不变，因此已有分析、备注与显示偏好继续可用。旧笔记标题保留原样，新建笔记使用“研矩 · 项目名”。

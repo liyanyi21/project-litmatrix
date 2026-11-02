@@ -1,4 +1,4 @@
-/* Project LitMatrix. Native DOM patterns adapted from LitMatrix 1.1.0. AGPL-3.0-or-later. */
+/* ResearchGrid. Native DOM patterns adapted from LitMatrix 1.1.0. AGPL-3.0-or-later. */
 "use strict";
 const Z = (() => {
   try { return ChromeUtils.importESModule("chrome://zotero/content/zotero.mjs").Zotero; }
@@ -250,7 +250,7 @@ async function exportCSV() {
   const count = state.shown.length;
   const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
   const fp = new FilePicker();
-  fp.init(window, "导出项目文献矩阵", fp.modeSave);
+  fp.init(window, "导出研矩", fp.modeSave);
   fp.defaultString = `${project.name.replace(/[\\/:*?"<>|]/g, "_")}-文献矩阵.csv`;
   fp.defaultExtension = "csv";
   fp.appendFilter("CSV 文献矩阵", "*.csv");

@@ -30,8 +30,8 @@ function addToWindow(win) {
   const state = { elements: [] };
   win[PLM_STATE] = state;
   for (const [menuID, suffix, label] of [
-    ["menu_ToolsPopup", "tools", "项目文献矩阵"],
-    ["zotero-collectionmenu", "collection", "打开项目文献矩阵"],
+    ["menu_ToolsPopup", "tools", "研矩 · ResearchGrid"],
+    ["zotero-collectionmenu", "collection", "打开研矩"],
   ]) {
     const menu = win.document.getElementById(menuID);
     if (!menu) continue;
