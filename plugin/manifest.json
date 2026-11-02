@@ -1,0 +1,16 @@
+{
+  "manifest_version": 2,
+  "name": "项目文献矩阵 · Project LitMatrix",
+  "version": "0.1.0",
+  "description": "按 Zotero 分类建立项目独立的中文文献矩阵，支持分析笔记、CSV 导出和原文跳转。基于 LitMatrix。",
+  "author": "liyanyi; based on LitMatrix by bapungiri",
+  "icons": { "48": "content/icon.svg", "96": "content/icon.svg" },
+  "applications": {
+    "zotero": {
+      "id": "project-litmatrix@liyanyi.local",
+      "update_url": "https://127.0.0.1:0/project-litmatrix/updates.json",
+      "strict_min_version": "7.0",
+      "strict_max_version": "11.*"
+    }
+  }
+}

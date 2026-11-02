@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN" windowtype="zotero:projectlitmatrix">
+<head>
+  <meta charset="utf-8">
+  <title>项目文献矩阵</title>
+  <link rel="stylesheet" href="matrix.css">
+</head>
+<body>
+  <header>
+    <div class="heading"><div><span class="eyebrow">PROJECT LITMATRIX</span><h1>项目文献矩阵</h1></div><span class="version">0.1.0</span></div>
+    <div class="toolbar">
+      <label class="project-label">研究项目<select id="project" aria-label="研究项目"><option value="">请选择 Zotero 分类</option></select></label>
+      <button id="current">使用当前分类</button>
+      <label class="check"><input id="recursive" type="checkbox" checked>包含子分类</label>
+      <span class="spacer"></span>
+      <button id="columns">显示字段</button><button id="refresh">刷新</button><button id="export" class="primary" disabled>导出 CSV</button>
+    </div>
+    <div class="searchbar"><input id="search" type="search" placeholder="搜索文献、分析和批注，可组合多个关键词…" aria-label="搜索文献矩阵">
+      <select id="analysisState" aria-label="分析状态"><option value="all">全部文献</option><option value="filled">已填写分析</option><option value="empty">尚未填写</option></select>
+      <select id="sort" aria-label="文献排序"><option value="title">按标题</option><option value="yearDesc">年份：新到旧</option><option value="yearAsc">年份：旧到新</option><option value="author">按作者</option></select>
+    </div>
+    <p id="projectHint" class="hint">在 Zotero 中选择分类，再点击“使用当前分类”。每个分类的分析与备注独立保存。</p>
+  </header>
+  <div class="statusline"><span id="status" role="status" aria-live="polite">请选择研究项目</span><span id="saveStatus"></span></div>
+  <main id="results"><table id="grid" hidden><colgroup></colgroup><thead></thead><tbody></tbody></table>
+    <div id="empty"><h2>从一个研究项目开始</h2><p>选择分类后，所有文献都会出现在这里，包括没有高亮或批注的文献。</p></div>
+  </main>
+  <dialog id="editDialog">
+    <form id="editForm"><div class="dialog-title"><h2 id="editHeading"></h2><button type="button" id="editClose" class="icon" aria-label="关闭编辑">×</button></div>
+      <p id="editContext" class="hint"></p><textarea id="editValue" rows="10" aria-label="分析内容" placeholder="填写你的分析，支持多行文本…"></textarea>
+      <p id="editError" class="error" role="alert"></p><div class="dialog-actions"><span class="hint">⌘ / Ctrl + Enter 保存</span><span class="spacer"></span><button type="button" id="editCancel">取消</button><button id="editSave" class="primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="columnsDialog"><div class="dialog-title"><h2>中文分析字段</h2><button id="columnsClose" class="icon" aria-label="关闭字段设置">×</button></div><p class="hint">隐藏列不会删除已填写的内容。设置按项目保存。</p><div id="fieldChoices"></div></dialog>
+  <dialog id="annotationsDialog"><div class="dialog-title"><h2>原文批注</h2><button id="annotationsClose" class="icon" aria-label="关闭原文批注">×</button></div><p id="annotationTitle" class="hint"></p><div id="annotationsList"></div></dialog>
+  <div id="toast" role="status" hidden></div>
+  <script src="core.js"></script><script src="repository.js"></script><script src="matrix.js"></script>
+</body>
+</html>

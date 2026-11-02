@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+validation/
+task_plan.md
+findings.md
+progress.md
+.env
+.env.*
+*.log
+*.pem
+*.key
