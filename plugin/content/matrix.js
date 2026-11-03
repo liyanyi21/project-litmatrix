@@ -54,8 +54,10 @@ function savePrefs(patch = {}) {
   state.project.fields = allFields();
 }
 let fieldManager;
+let aiManager;
 function showColumns() {
   if (!state.project || state.loading) return;
+  if (aiManager?.isOpen()) { toast("请先关闭 AI 总结窗口。"); return; }
   if (!fieldManager) fieldManager = new RGFields.Manager({
     document, getProject: () => state.project, getFields: allFields,
     getTemplates: () => state.preferences.templates || [],
@@ -73,6 +75,50 @@ function showColumns() {
     notify: toast,
   });
   return fieldManager.open().catch(failure);
+}
+async function showAI(row) {
+  if (!state.project || state.loading || state.saving) return;
+  if (fieldManager?.dialog?.open) return;
+  if (!aiManager) aiManager = new RGAIDialog.Manager({
+    document, getProject: () => state.project, getFields: activeFields,
+    beforeOpen: () => !state.editing || closeEditor(),
+    getConfig: () => new RGAI.ConfigStore(Z).getConfig(),
+    getSource: (paper, options) => repo.paperSource(paper, options),
+    openSettings: () => Z.ProjectLitMatrix.openSettings(),
+    generate: async ({ config, project, fields, paper, source, signal }) => {
+      const current = () => RGAI.normalizeConfig(new RGAI.ConfigStore(Z).getConfig());
+      const snapshot = RGAI.normalizeConfig(config);
+      const unchanged = () => JSON.stringify(current()) === JSON.stringify(snapshot);
+      if (!unchanged()) throw new Error("API 设置已变化，请点击“刷新 API 设置”后再生成。");
+      let key;
+      try { key = await Z.ProjectLitMatrix.credentials.getKey(RGAI.endpointFor(snapshot.baseURL)); }
+      catch (_) { throw new Error("无法读取当前 API 地址的密钥，请到研矩设置检查密钥存储。"); }
+      if (!unchanged()) throw new Error("API 设置已变化，请刷新设置后重试。");
+      const messages = RGAI.buildMessages({ project, fields, paper, source });
+      const result = await RGAI.request(snapshot, key, messages, { signal, fetchImpl: (...args) => window.fetch(...args) });
+      return RGAI.parseResult(result.content, fields);
+    },
+    save: async (project, row, changes, expected) => {
+      state.saving = true;
+      try {
+        const record = await repo.saveFields(project, row, changes, expected);
+        const targets = new Set([row, ...state.rows.filter(r => r.id === row.id && r.key === row.key)]);
+        for (const target of targets) {
+          target.values = record.values;
+          target.noteKey = record.note?.key || null;
+          target.noteURL = target.noteKey ? C.itemLink(project.library, target.noteKey) : "";
+        }
+        $("#saveStatus").textContent = "AI 草稿已写入所选项目字段";
+        render();
+        return record;
+      } finally {
+        state.saving = false;
+        if (state.pendingReload) scheduleReload();
+      }
+    },
+    notify: toast,
+  });
+  return aiManager.open(row);
 }
 let toastTimer;
 function toast(message) {
@@ -109,6 +155,12 @@ function syncControls() {
 async function selectProject(target) {
   const project = state.projects.find(p => typeof target === "string" ? p.id === target :
     p.libraryID === Number(target.libraryID) && p.collectionKey === target.collectionKey);
+  if (aiManager?.isOpen()) {
+    if (project?.id === state.project?.id) return true;
+    $("#project").value = state.project?.id || "";
+    toast("请先关闭 AI 总结窗口，再切换项目。");
+    return false;
+  }
   if (fieldManager?.dialog?.open) {
     if (project?.id === state.project?.id) return true;
     $("#project").value = state.project?.id || "";
@@ -200,6 +252,7 @@ function render() {
       h("div", { class: "tags" }, ...row.tags.map(t => h("span", { class: "tag" }, t))),
       h("div", { class: "paper-actions" },
         h("button", { onclick: safe(() => repo.openPaper(row)) }, row.attachmentID ? "打开原文" : "定位文献"),
+        h("button", { class: "ai-summary", onclick: safe(() => showAI(row)), title: "按当前项目字段生成 AI 草稿" }, "AI 总结"),
         h("button", { onclick: () => showAnnotations(row), disabled: !row.annotations.length }, `批注 ${row.annotations.length}`),
         h("button", { onclick: safe(() => repo.selectItem(row.id)) }, "Zotero 条目")),
       row.noteError ? h("p", { class: "error" }, row.noteError) : null,
@@ -427,11 +480,12 @@ async function init() {
   });
   window.addEventListener("beforeunload", event => {
     if (state.saving || (state.editing && editorValue() !== state.editing.original) ||
-      (fieldManager?.dialog?.open && (fieldManager.busy || fieldManager.dirty()))) { event.preventDefault(); event.returnValue = ""; }
+      (fieldManager?.dialog?.open && (fieldManager.busy || fieldManager.dirty())) ||
+      (aiManager?.isOpen() && (aiManager.busy || aiManager.dirty()))) { event.preventDefault(); event.returnValue = ""; }
   });
   const observerID = Z.Notifier.registerObserver({ notify: () => scheduleReload() },
     ["item", "item-tag", "collection", "collection-item"], "projectlitmatrix");
-  window.addEventListener("unload", () => { Z.Notifier.unregisterObserver(observerID); clearTimeout(reloadTimer); clearTimeout(toastTimer); clearTimeout(searchTimer); });
+  window.addEventListener("unload", () => { aiManager?.cancel(); Z.Notifier.unregisterObserver(observerID); clearTimeout(reloadTimer); clearTimeout(toastTimer); clearTimeout(searchTimer); });
   window.ProjectLitMatrixUI = { selectProject, reload, showFields: showColumns };
   const query = new URLSearchParams(location.search);
   const requested = window.__plmRequestedProject || (query.get("collection") ? { libraryID: query.get("library"), collectionKey: query.get("collection") } : null);

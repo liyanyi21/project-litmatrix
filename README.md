@@ -27,7 +27,18 @@
 
 任务与证据类型、研究方法与样本、观测指标、核心结论、局限性、与我的研究的关系、我的备注。
 
-默认显示任务与证据类型、观测指标、核心结论和我的备注，其余可在“项目字段与模板”开启。所有字段为纯文本，支持换行，不自动生成 AI 总结。
+默认显示任务与证据类型、观测指标、核心结论和我的备注，其余可在“项目字段与模板”开启。所有字段为纯文本，支持换行，可通过每篇文献的“AI 总结”按钮，按当前项目字段生成可核对的草稿。
+
+## AI 按字段总结
+
+1. 打开 Zotero“设置 → 研矩 → AI 字段总结”，填写 OpenAI 兼容 API 地址、模型 ID 与 API Key；地址可以是基础地址（建议包含 `/v1`）或完整 `/chat/completions` URL。
+2. 设置原文字符上限、超时和可选最大输出 token。“测试连接”只发简短测试句，不发送论文；测试成功后点击“保存 API 设置”。
+3. 在论文行点击“AI 总结”。检查目标地址、模型、文本来源与选中字段；默认只勾选空字段。已有分析、个人备注和批注不发送给 API。
+4. 可选择本地原文提取文本与摘要，或仅摘要。索引可能不完整；截取、缺少原文及 OCR 等情况会明确显示。只提供局部文本时，AI 无法可靠判断全文内容。
+5. 点击“发送到 API 并生成草稿”。生成不会自动写笔记；可取消请求，在预览中编辑、选择结果，再点击“写入选中字段”。写入时统一检查原值，任一选中字段冲突则本次全部拒绝写入。
+6. 更改 API 设置后，在预览中点击“刷新 API 设置”。密钥按最终请求地址分别保存在本机 Zotero 密码管理器，不读取其他插件密钥，不存进公共偏好、导出或源码包。无鉴权的回环本地服务可以留空。
+
+仅使用 OpenAI 兼容 Chat Completions 非流式接口，暂不支持 Claude 原生协议、图片识别、批量自动调用或后台生成。扫描版 PDF 需先 OCR。每次调用可能产生服务商费用，AI 草稿需核对原文，不能替代全文阅读；未提供证据的字段应返回“未提供／无法判断”。不预置任何服务或密钥。
 
 ## 项目字段与通用模板
 
@@ -64,7 +75,7 @@ npm test
 npm run build
 ```
 
-构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.2.0.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
+构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.3.0.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
 
 ## 文件组织
 
@@ -73,6 +84,9 @@ npm run build
 - `plugin/content/repository.js`：Zotero 数据读写、项目笔记隔离、权限和冲突检查、原文跳转。
 - `plugin/content/preferences.xhtml` / `preferences.js`：Zotero 原生设置页容器与控制器。
 - `plugin/content/fields.js` / `fields.css`：项目字段草稿、归档恢复与通用模板管理。
+- `plugin/content/ai.js`：OpenAI 兼容配置、请求、字段提示与严格结果解析。
+- `plugin/content/ai-dialog.js` / `ai-dialog.css`：来源/发送范围、AI 草稿预览与确认写入。
+- `plugin/content/credentials.js`：按 API 地址隔离的本机密钥存储。
 - `plugin/content/matrix.js`：中文矩阵、编辑、字段偏好、刷新和导出交互。
 - `tests/`：核心数据行为与 Zotero 适配器测试。
 - `scripts/build.py`：XPI 与对应源代码打包。

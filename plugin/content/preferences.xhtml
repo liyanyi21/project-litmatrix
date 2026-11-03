@@ -19,5 +19,28 @@
       oncommand="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.openFields();" /></hbox>
     <description>先在 Zotero 主窗口选择项目分类。字段定义与模板保存在本机，分析和备注仍保存为 Zotero 项目笔记。</description>
   </groupbox>
+  <groupbox id="research-grid-ai-settings">
+    <label><html:h2>AI 字段总结 · OpenAI 兼容接口</html:h2></label>
+    <description>为文献矩阵配置独立 API。选中论文后可按项目字段和填写要求生成草稿，确认后再写入。</description>
+    <label control="rg-ai-url" value="API 地址（基础地址或完整 chat/completions 地址）" />
+    <html:input id="rg-ai-url" type="url" placeholder="https://your-provider.example/v1" style="width:100%" />
+    <label control="rg-ai-model" value="模型名称" />
+    <html:input id="rg-ai-model" type="text" placeholder="填写服务商提供的模型 ID" style="width:100%" />
+    <label control="rg-ai-key" value="API Key" />
+    <html:input id="rg-ai-key" type="password" autocomplete="off" placeholder="留空保留已保存的密钥" style="width:100%" />
+    <description id="rg-ai-key-status">密钥按 API 地址分别保存在本机 Zotero 密码管理器，不读取其他插件的密钥。</description>
+    <hbox align="center"><label control="rg-ai-max-chars" value="原文最多发送字符数" /><html:input id="rg-ai-max-chars" type="number" min="1000" max="300000" step="1000" /></hbox>
+    <hbox align="center"><label control="rg-ai-timeout" value="请求超时（秒）" /><html:input id="rg-ai-timeout" type="number" min="5" max="600" /></hbox>
+    <hbox align="center"><label control="rg-ai-max-tokens" value="最大输出 token（0 使用服务商默认值）" /><html:input id="rg-ai-max-tokens" type="number" min="0" max="32768" /></hbox>
+    <hbox>
+      <button id="rg-ai-save" label="保存 API 设置" oncommand="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.saveAIConfig();" />
+      <button id="rg-ai-test" label="测试连接" oncommand="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.testAI();" />
+      <button id="rg-ai-cancel" label="取消测试" disabled="true" oncommand="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.cancelAITest();" />
+      <button id="rg-ai-clear-key" label="清除已保存密钥" oncommand="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.clearAIKey();" />
+      <button id="rg-ai-reset" label="清空 API 配置" oncommand="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.clearAIConfig();" />
+    </hbox>
+    <description>测试连接只发送简短测试句，不发送论文。发送论文前会显示地址、模型和内容范围；服务商可能按调用计费。</description>
+    <description id="rg-ai-status" role="status" />
+  </groupbox>
   <description>研矩 · ResearchGrid <html:span id="research-grid-version" /></description>
 </vbox>

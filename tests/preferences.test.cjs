@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { DOMParser } = require('linkedom');
 
 const content = name => fs.readFileSync(path.join(__dirname, '../plugin', name), 'utf8');
-const plugin = { rootURI: 'jar:file:///research-grid.xpi!/', id: 'project-litmatrix@liyanyi.local', version: '0.1.2' };
+const plugin = { rootURI: 'jar:file:///research-grid.xpi!/', id: 'project-litmatrix@liyanyi.local', version: '0.3.0' };
 
 function lifecycle() {
   const panes = new Map();
@@ -34,6 +34,11 @@ function lifecycle() {
   const context = vm.createContext({
     Zotero, APP_SHUTDOWN: 2,
     Services: {
+      scriptloader: { loadSubScript(url, scope) {
+        assert.equal(url, plugin.rootURI + 'content/credentials.js');
+        vm.runInNewContext(content('content/credentials.js'), scope);
+      } },
+      logins: {},
       obs: { notifyObservers() {} },
       io: { newURI: value => value },
       wm: { getMostRecentWindow: () => ({ close() { matrixClosed++; } }) },
@@ -59,7 +64,9 @@ test('native settings pane is removed on disable and can be registered again on 
   const pane = f.registrations[0];
   assert.equal(pane.pluginID, plugin.id);
   assert.equal(pane.src, plugin.rootURI + 'content/preferences.xhtml');
-  assert.deepEqual([...pane.scripts], [plugin.rootURI + 'content/preferences.js']);
+  assert.deepEqual([...pane.scripts], [plugin.rootURI + 'content/ai.js', plugin.rootURI + 'content/preferences.js']);
+  assert.equal(typeof f.Zotero.ProjectLitMatrix.credentials.getKey, 'function');
+  assert.equal(typeof f.Zotero.ProjectLitMatrix.openSettings, 'function');
   assert.equal(f.Zotero.ProjectLitMatrix.version, plugin.version);
   assert.equal(typeof f.Zotero.ProjectLitMatrix.open, 'function');
 
@@ -89,20 +96,47 @@ function preferences({ legacy = false } = {}) {
   const document = new DOMParser().parseFromString(content('content/preferences.xhtml'), 'text/xml');
   let opens = 0;
   const errors = [];
-  const Zotero = { ProjectLitMatrix: { version: plugin.version, open() { opens++; } }, logError: e => errors.push(e) };
+  const keys = new Map();
+  const keyCalls = [];
+  const savedPrefs = new Map();
+  const state = { failPublicWrite: false };
+  const credentials = {
+    async getKey(endpoint) { keyCalls.push(['get', endpoint]); return keys.get(endpoint) || ''; },
+    async setKey(endpoint, key) { keyCalls.push(['set', endpoint, key]); keys.set(endpoint, key); },
+    async clearKey(endpoint) { keyCalls.push(['clear', endpoint]); keys.delete(endpoint); },
+  };
+  const Zotero = {
+    ProjectLitMatrix: { version: plugin.version, open() { opens++; }, credentials },
+    Prefs: {
+      get(key) { return savedPrefs.get(key); },
+      set(key, value) { if (state.failPublicWrite) throw new Error('synthetic pref write failure'); savedPrefs.set(key, value); },
+    },
+    logError: e => errors.push(e),
+  };
   // Native inline handlers run in the shared preferences window. Zotero 8+
   // loads a plugin's script into a separate sandbox, exposed by getScope().
   // Zotero 7 instead loads that script directly into the shared window.
-  const sharedWindow = { document, Zotero, Zotero_Preferences: {} };
+  const sharedWindow = { document, Zotero, Zotero_Preferences: {}, URL, AbortController,
+    setTimeout, clearTimeout, addEventListener() {},
+    fetch() { throw new Error('tests must explicitly supply a synthetic transport'); } };
   sharedWindow.window = sharedWindow;
   const windowContext = vm.createContext(sharedWindow);
-  const context = legacy ? windowContext : vm.createContext({ document, Zotero });
+  const context = legacy ? windowContext : vm.createContext({ document, Zotero, window: sharedWindow,
+    URL, AbortController, setTimeout, clearTimeout });
   if (!legacy) sharedWindow.Zotero_Preferences.getScope = id => {
     assert.equal(id, 'research-grid-preferences');
     return context;
   };
+  vm.runInContext(content('content/ai.js'), context);
   vm.runInContext(content('content/preferences.js'), context);
-  return { document, Zotero, context, windowContext, errors, opens: () => opens };
+  const controller = context.ResearchGridPreferences;
+  function setInput(config = {}) {
+    const values = { 'rg-ai-url': 'https://provider-a.example/v1', 'rg-ai-model': 'synthetic-model',
+      'rg-ai-max-chars': '60000', 'rg-ai-timeout': '120', 'rg-ai-max-tokens': '0', 'rg-ai-key': '', ...config };
+    for (const [id, value] of Object.entries(values)) document.getElementById(id).value = value;
+  }
+  return { document, Zotero, context, windowContext, window: sharedWindow, controller, keys, keyCalls, savedPrefs, state,
+    setInput, errors, opens: () => opens, status: () => document.getElementById('rg-ai-status').textContent };
 }
 
 for (const legacy of [false, true]) {
@@ -132,4 +166,112 @@ test('failed settings launch shows an error and a successful retry clears it', (
   f.Zotero.ProjectLitMatrix.open = () => {};
   f.context.ResearchGridPreferences.openMatrix();
   assert.equal(error.textContent, '');
+});
+
+
+test('settings store an API key separately from public preferences and clear the typed field', async () => {
+  const f = preferences();
+  f.setInput({ 'rg-ai-key': 'synthetic-private-key' });
+  await f.controller.saveAIConfig();
+  const endpoint = 'https://provider-a.example/v1/chat/completions';
+  assert.equal(f.keys.get(endpoint), 'synthetic-private-key');
+  assert.equal(f.document.getElementById('rg-ai-key').value, '');
+  const publicJSON = [...f.savedPrefs.values()].join('\n');
+  assert.ok(!publicJSON.includes('synthetic-private-key'));
+  assert.ok(!publicJSON.includes('apiKey'));
+  assert.ok(f.status().includes('已保存 AI 设置'));
+  assert.equal(JSON.parse(f.savedPrefs.get(f.context.RGAI.CONFIG_PREF)).model, 'synthetic-model');
+});
+
+test('switching API endpoint with a blank key never copies or clears the old endpoint secret', async () => {
+  const f = preferences();
+  const a = 'https://provider-a.example/v1/chat/completions';
+  const b = 'https://provider-b.example/v1/chat/completions';
+  f.keys.set(a, 'synthetic-a-key');
+  f.setInput({ 'rg-ai-url': 'https://provider-b.example/v1', 'rg-ai-key': '' });
+  await f.controller.saveAIConfig();
+  assert.equal(f.keys.get(a), 'synthetic-a-key');
+  assert.equal(f.keys.has(b), false);
+  assert.equal(f.keyCalls.filter(call => call[0] === 'set' || call[0] === 'clear').length, 0);
+  assert.ok(f.document.getElementById('rg-ai-key-status').textContent.includes('尚未保存'));
+  assert.equal(JSON.parse(f.savedPrefs.get(f.context.RGAI.CONFIG_PREF)).baseURL, 'https://provider-b.example/v1');
+});
+
+test('public preference write failure rolls a changed key back to its previous value', async () => {
+  const f = preferences();
+  const endpoint = 'https://provider-a.example/v1/chat/completions';
+  f.keys.set(endpoint, 'synthetic-old-key');
+  f.setInput({ 'rg-ai-key': 'synthetic-new-key' });
+  f.state.failPublicWrite = true;
+  await f.controller.saveAIConfig();
+  assert.equal(f.keys.get(endpoint), 'synthetic-old-key');
+  assert.equal(f.savedPrefs.size, 0);
+  assert.ok(f.status().includes('保存 AI 设置失败'));
+  assert.equal(f.controller.aiBusy, false);
+  assert.equal(f.document.getElementById('rg-ai-save').disabled, false);
+});
+
+test('public preference write failure removes a newly created key without touching other endpoints', async () => {
+  const f = preferences();
+  const endpoint = 'https://provider-a.example/v1/chat/completions';
+  f.keys.set('https://other.example/v1/chat/completions', 'synthetic-other-key');
+  f.setInput({ 'rg-ai-key': 'synthetic-new-key' });
+  f.state.failPublicWrite = true;
+  await f.controller.saveAIConfig();
+  assert.equal(f.keys.has(endpoint), false);
+  assert.equal(f.keys.get('https://other.example/v1/chat/completions'), 'synthetic-other-key');
+});
+
+test('clearing the current endpoint key retains other service keys', async () => {
+  const f = preferences();
+  const a = 'https://provider-a.example/v1/chat/completions';
+  const b = 'https://provider-b.example/v1/chat/completions';
+  f.keys.set(a, 'synthetic-a-key'); f.keys.set(b, 'synthetic-b-key');
+  f.setInput();
+  await f.controller.clearAIKey();
+  assert.equal(f.keys.has(a), false);
+  assert.equal(f.keys.get(b), 'synthetic-b-key');
+  assert.ok(f.status().includes('已清除'));
+});
+
+test('connection test sends only a synthetic test sentence and does not persist typed inputs', async () => {
+  const f = preferences();
+  f.setInput({ 'rg-ai-key': 'synthetic-unsaved-key' });
+  let request;
+  f.window.fetch = async (endpoint, options) => {
+    request = { endpoint, options, body: JSON.parse(options.body) };
+    return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }] }) };
+  };
+  await f.controller.testAI();
+  assert.equal(request.endpoint, 'https://provider-a.example/v1/chat/completions');
+  assert.deepEqual(request.body.messages, [
+    { role: 'system', content: 'This is a connection test. Reply briefly with OK.' },
+    { role: 'user', content: 'Reply OK.' },
+  ]);
+  assert.equal(request.options.headers.Authorization, 'Bearer synthetic-unsaved-key');
+  assert.equal(f.savedPrefs.size, 0); assert.equal(f.keys.size, 0);
+  assert.ok(f.status().includes('连接成功'));
+  assert.equal(f.controller.aiBusy, false);
+  assert.equal(f.document.getElementById('rg-ai-key').value, 'synthetic-unsaved-key');
+});
+
+test('connection test can be canceled without persisting inputs or exposing transport errors', async () => {
+  const f = preferences();
+  f.setInput({ 'rg-ai-key': 'synthetic-unsaved-key' });
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  f.window.fetch = (endpoint, options) => new Promise((resolve, reject) => {
+    started();
+    options.signal.addEventListener('abort', () => reject(new Error('synthetic transport failure includes sensitive material')), { once: true });
+  });
+  const running = f.controller.testAI();
+  await ready;
+  assert.equal(f.controller.aiBusy, true);
+  f.controller.cancelAITest();
+  await running;
+  assert.ok(f.status().includes('已取消'));
+  assert.ok(!f.status().includes('sensitive material'));
+  assert.equal(f.savedPrefs.size, 0); assert.equal(f.keys.size, 0);
+  assert.equal(f.controller.aiBusy, false);
+  assert.equal(f.document.getElementById('rg-ai-save').disabled, false);
 });

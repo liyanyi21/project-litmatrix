@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <title>研矩 · ResearchGrid</title>
-  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css">
+  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css"><link rel="stylesheet" href="ai-dialog.css">
 </head>
 <body>
   <header>
-    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.2.0</span></div>
+    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.3.0</span></div>
     <div class="toolbar">
       <label class="project-label">研究项目<select id="project" aria-label="研究项目"><option value="">请选择 Zotero 分类</option></select></label>
       <button id="current">使用当前分类</button>
@@ -33,6 +33,6 @@
   </dialog>
   <dialog id="annotationsDialog"><div class="dialog-title"><h2>原文批注</h2><button id="annotationsClose" class="icon" aria-label="关闭原文批注">×</button></div><p id="annotationTitle" class="hint"></p><div id="annotationsList"></div></dialog>
   <div id="toast" role="status" hidden></div>
-  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="matrix.js"></script>
+  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="ai.js"></script><script src="ai-dialog.js"></script><script src="matrix.js"></script>
 </body>
 </html>

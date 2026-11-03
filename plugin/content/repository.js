@@ -130,13 +130,21 @@
       return [...doc.body.childNodes].map(this.C.plainNode).join("").trim();
     }
     async saveField(project, row, fieldID, value, expected) {
-      const fields = project.fields || this.C.FIELDS;
-      const field = this.C.fieldByID(fieldID, fields);
-      if (!field || field.archived) throw new Error("未知或已移除的分析字段。");
+      return this.saveFields(project, row, { [fieldID]: value }, { [fieldID]: expected });
+    }
+    async saveFields(project, row, changes, expected) {
+      const fields = (project.fields || this.C.FIELDS).map(f => ({ ...f, aliases: [...(f.aliases || [])] }));
+      const entries = Object.entries(changes);
+      if (!entries.length) throw new Error("请先选择需要写入的字段。");
+      for (const [id, value] of entries) {
+        const field = this.C.fieldByID(id, fields);
+        if (!field || field.archived) throw new Error("未知或已移除的分析字段。");
+        if (typeof value !== "string" || typeof expected[id] !== "string") throw new Error("字段内容或原值格式不正确。");
+      }
+      const originals = Object.fromEntries(entries.map(([id]) => [id, expected[id]]));
       project = { ...project, fields };
       if (!row.editable || !this.Z.Libraries.get(project.libraryID)?.editable) throw new Error("此文献不能编辑项目笔记。");
       let saved;
-      // Resolve notes again inside the transaction: don't write a stale UI snapshot.
       await this.Z.DB.executeTransaction(async () => {
         const paper = await this.Z.Items.getAsync(row.id);
         if (!paper || paper.deleted || paper.libraryID !== project.libraryID || paper.key !== row.key) {
@@ -144,22 +152,89 @@
         }
         if (paper.isEditable && !paper.isEditable()) throw new Error("此文献当前不可编辑。");
         const fresh = await this.noteFor(paper, project);
-        if (fresh.values[fieldID] !== expected) throw new Error("这个字段已在其他窗口或设备中修改。请保留输入，关闭编辑框并刷新后核对。");
-        if (value.trim() === expected.trim()) { saved = fresh; return; }
+        // Check every selected field before writing anything: AI drafts apply atomically.
+        if (entries.some(([id]) => fresh.values[id] !== originals[id])) {
+          throw new Error("选中的字段已在其他窗口或设备中修改。请保留草稿，关闭预览并刷新后核对。");
+        }
+        const changed = entries.filter(([id, value]) => value.trim() !== originals[id].trim());
+        if (!changed.length) { saved = fresh; return; }
         let note = fresh.note;
         if (!note) {
           note = new this.Z.Item("note");
           note.libraryID = project.libraryID;
           note.parentID = paper.id;
           note.addTag(this.C.noteTag(project.id));
-          note.setNote(this.C.createNote(project.name, { [fieldID]: value }, fields));
+          note.setNote(this.C.createNote(project.name, Object.fromEntries(changed), fields));
         } else {
-          note.setNote(this.C.updateNote(note.getNote(), fieldID, value, this.Parser, fields));
+          let html = note.getNote();
+          for (const [id, value] of changed) html = this.C.updateNote(html, id, value, this.Parser, fields);
+          note.setNote(html);
         }
         await note.save();
         saved = { note, values: this.C.parseNote(note.getNote(), this.Parser, fields).values };
       });
       return saved;
+    }
+    async paperSource(row, { mode = "indexed", maxChars = 60000, signal } = {}) {
+      const checkCancelled = () => { if (signal?.aborted) throw new Error("已取消读取论文。"); };
+      checkCancelled();
+      const paper = await this.Z.Items.getAsync(row.id);
+      if (!paper || paper.deleted || paper.key !== row.key || paper.libraryID !== row.libraryID) {
+        throw new Error("文献已变化，请刷新后重试。");
+      }
+      await this.Z.Items.loadDataTypes([paper], ["itemData"]);
+      const metadata = { title: row.title, authors: row.authors, year: row.year,
+        abstract: paper.isRegularItem() ? this.htmlText(paper.getField("abstractNote") || "") : "" };
+      let text = metadata.abstract;
+      let label = "仅摘要";
+      let warning = "";
+      if (mode === "indexed") {
+        let full = "";
+        let partial = false;
+        const attachment = row.attachmentID ? await this.Z.Items.getAsync(row.attachmentID) : null;
+        if (attachment && !attachment.deleted && (attachment.id === paper.id || attachment.parentID === paper.id)) {
+          const fulltext = this.Z.FullText || this.Z.Fulltext;
+          try {
+            const cache = fulltext?.getItemCacheFile(attachment);
+            if (cache?.exists()) {
+              // Avoid unbounded reads for unusually large indexed files.
+              full = await this.Z.File.getContentsAsync(cache.path, "utf-8", 2000000);
+              if (cache.fileSize > 2000000) warning = "索引文本较大，仅读取前 2 MB。";
+              label = "Zotero 已索引文本（可能为部分原文）";
+              if (fulltext.getIndexedState) {
+                try { partial = await fulltext.getIndexedState(attachment) === fulltext.INDEX_STATE_PARTIAL; } catch (_) { /* keep conservative label */ }
+              }
+            }
+          } catch (_) { warning = "索引暂不可读取，本次尝试使用本地 PDF 或摘要。"; }
+          if ((!full?.trim() || partial) && attachment.attachmentContentType === "application/pdf" && this.Z.PDFWorker?.getFullText) {
+            checkCancelled();
+            try {
+              const extracted = await this.Z.PDFWorker.getFullText(attachment.id, null);
+              const extractedText = typeof extracted === "string" ? extracted : extracted?.text;
+              if (extractedText?.trim()) { full = extractedText; label = "本地 PDF 提取文本"; warning = ""; }
+            } catch (_) { warning = "PDF 提取未完成，本次仅使用可读取的索引或摘要。"; }
+          }
+        }
+        checkCancelled();
+        if (full?.trim()) text = full;
+        else {
+          label = "仅摘要（原文文本不可用）";
+          warning = "未获取到可用原文；本次只能依据摘要，不能代表通读全文。扫描版 PDF 需先完成 OCR。";
+        }
+      }
+      if (!text?.trim()) throw new Error("没有可用的原文文本或摘要，请先为文献添加可提取文字的 PDF 或补充摘要。");
+      const limit = Math.max(1000, Math.min(300000, Number(maxChars) || 60000));
+      const truncated = text.length > limit;
+      if (truncated) {
+        const marker = "\n[中间部分因长度限制省略]\n";
+        const remaining = limit - marker.length;
+        const head = Math.floor(remaining * 0.75);
+        text = text.slice(0, head) + marker + text.slice(-(remaining - head));
+        warning += `${warning ? " " : ""}文本超过上限，本次仅使用开头与结尾摘录。`;
+      }
+      checkCancelled();
+      metadata.abstract = mode === "abstract" ? "" : metadata.abstract.slice(0, 6000);
+      return { text, label, warning, truncated, chars: text.length, paper: metadata };
     }
     async openPaper(row) {
       if (row.attachmentID) await this.Z.Reader.open(row.attachmentID);

@@ -13,7 +13,8 @@ const settle = async () => {
   await new Promise(resolve => setImmediate(resolve));
 };
 
-async function ui({ fail = false, saved = { version: 1, projects: {} } } = {}) {
+async function ui({ fail = false, saved = { version: 1, projects: {} },
+  aiSaved = { baseURL: 'https://api.example.test/v1', model: 'fixture-model', maxChars: 60000, timeoutSeconds: 30, maxTokens: 0 } } = {}) {
   const { window, document } = parseHTML(fs.readFileSync('plugin/content/matrix.html', 'utf8'));
   // LinkeDOM has no native select value setter or dialog API. Cover both the
   // static editor and dialogs/selects later created by the field manager.
@@ -36,8 +37,11 @@ async function ui({ fail = false, saved = { version: 1, projects: {} } } = {}) {
   const row = { id: 1, key: 'PAPERKEY', title: '未批注文献', authors: '张', year: '2026', citekey: 'Zhang2026', tags: [], annotations: [],
     values: C.blankValues(), editable: true, paper, itemURL: 'zotero://select/library/items/PAPERKEY', pdfURL: '', attachmentID: null };
   const rowB = { ...row, values: C.blankValues() };
-  const loads = [], saves = [], logs = [];
-  let preferences = clone(saved);
+  const loads = [], saves = [], logs = [], sourceCalls = [], apiCalls = [], keyCalls = [], batchSaves = [];
+  let preferences = clone(saved), aiConfig = clone(aiSaved);
+  const keyStore = new Map([['https://api.example.test/v1/chat/completions', 'fixture-only-key']]);
+  let keyProvider = async endpoint => keyStore.get(endpoint) || '';
+  let settingsOpened = 0;
   const repo = { projects: () => projects, currentProject: () => projects[0],
     loadProject: async project => {
       loads.push({ projectID: project.id, fields: clone(project.fields) });
@@ -47,16 +51,40 @@ async function ui({ fail = false, saved = { version: 1, projects: {} } } = {}) {
     saveField: async (project, target, id, value, expected) => {
       saves.push({ projectID: project.id, id, value, expected });
       return { note: { key: 'NOTEKEY' }, values: { ...target.values, [id]: value } };
+    },
+    paperSource: async (target, options) => {
+      sourceCalls.push({ rowID: target.id, mode: options.mode, maxChars: options.maxChars });
+      return { text: '论文原文片段：实验比较两种条件，结果有待结合原文核对。', label: '模拟提取文本', chars: 30, truncated: false,
+        paper: { title: target.title, authors: target.authors, year: target.year, abstract: '模拟公开摘要' } };
+    },
+    saveFields: async (project, target, changes, expected) => {
+      batchSaves.push({ projectID: project.id, changes: clone(changes), expected: clone(expected) });
+      for (const id of Object.keys(changes)) if ((target.values[id] || '') !== expected[id]) throw new Error('模拟原子字段冲突');
+      return { note: { key: 'AI_NOTEKEY' }, values: { ...target.values, ...changes } };
     } };
-  const Z = { Prefs: { get: () => JSON.stringify(preferences), set: (key, value) => { preferences = JSON.parse(value); } },
+  const Z = { Prefs: { get: key => JSON.stringify(key === 'extensions.researchgrid.ai' ? aiConfig : preferences),
+    set: (key, value) => { if (key === 'extensions.researchgrid.ai') aiConfig = JSON.parse(value); else preferences = JSON.parse(value); } },
+    ProjectLitMatrix: { credentials: { getKey: async endpoint => { keyCalls.push(endpoint); return keyProvider(endpoint); } },
+      openSettings() { settingsOpened++; } },
     Notifier: { registerObserver() { return 1; }, unregisterObserver() {} }, logError: error => logs.push(error) };
   const timers = new Set();
   const context = vm.createContext({ window, document, Node: window.Node, ChromeUtils: { importESModule: () => ({ Zotero: Z }) },
-    PLMCore: C, PLMRepository: class { constructor() { return repo; } }, location: { search: '' }, URLSearchParams,
+    PLMCore: C, PLMRepository: class { constructor() { return repo; } }, location: { search: '' }, URLSearchParams, URL, AbortController,
     setTimeout(fn, ms) { const timer = setTimeout(fn, ms); timer.unref(); timers.add(timer); return timer; },
     clearTimeout(timer) { clearTimeout(timer); timers.delete(timer); } });
   window.confirm = () => true;
+  window.fetch = async (url, options) => {
+    apiCalls.push({ url, options });
+    const payload = JSON.parse(options.body);
+    const last = payload.messages.at(-1).content;
+    const packet = JSON.parse(last.slice(last.indexOf('{')));
+    const values = Object.fromEntries(packet.requestedFields.map(field => [field.id, 'AI 草稿：' + field.label]));
+    return { ok: true, status: 200, redirected: false,
+      text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ fields: values }) } }] }) };
+  };
   vm.runInContext(fs.readFileSync('plugin/content/fields.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/ai.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/ai-dialog.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/matrix.js', 'utf8'), context);
   await settle();
   const run = code => vm.runInContext(code, context);
@@ -78,6 +106,8 @@ async function ui({ fail = false, saved = { version: 1, projects: {} } } = {}) {
     return event;
   };
   return { document, window, context, repo, projects, row, rowB, loads, saves, logs, run, cell, click, key,
+    sourceCalls, apiCalls, keyCalls, batchSaves, setAIConfig: value => { aiConfig = clone(value); },
+    aiConfig: () => clone(aiConfig), keyProvider: fn => { keyProvider = fn; }, settingsOpened: () => settingsOpened,
     prefs: () => clone(preferences), cleanup() { for (const timer of timers) clearTimeout(timer); } };
 }
 
@@ -326,5 +356,103 @@ test('failed template persistence does not expose an unsaved template to other p
     f.run('Z.Prefs.set = originalPrefSet; fieldManager.close(true)');
     await f.run(`selectProject('${PROJECT_B}')`);
     assert.deepEqual(clone(f.run('fieldManager.options.getTemplates()')), templatesBefore);
+  } finally { f.cleanup(); }
+});
+
+
+test('main AI action prepares current project fields and local paper text without sending a request', async () => {
+  const f = await ui({ saved: { version: 1, projects: { [PROJECT_A]: { fields: [
+    { id: 'custom_project_method', label: '本项目方法', requirement: '仅记录研究设计与样本', visible: true, archived: false },
+    { id: 'remarks', label: '我的备注', requirement: '个人想法', visible: true, archived: false },
+  ] } } } });
+  try {
+    f.row.values.remarks = 'PRIVATE_REMARK_DO_NOT_SEND';
+    f.row.annotations.push({ text: 'PRIVATE_ANNOTATION_DO_NOT_SEND', comment: 'PRIVATE_COMMENT_DO_NOT_SEND' });
+    await f.click(f.document.querySelector('.ai-summary'));
+    assert.equal(f.run('aiManager.isOpen()'), true);
+    assert.equal(f.apiCalls.length, 0);
+    assert.equal(f.keyCalls.length, 0);
+    assert.equal(f.batchSaves.length, 0);
+    assert.equal(f.sourceCalls.length, 1);
+    assert.equal(f.document.querySelector('[data-ai-field="custom_project_method"]').checked, true);
+    assert.ok(!f.document.querySelector('[data-ai-field="remarks"]').checked);
+    assert.equal(f.document.querySelector('#rg-ai-endpoint').textContent, 'https://api.example.test/v1');
+    await f.run('aiManager.generate()');
+    assert.equal(f.apiCalls.length, 1);
+    assert.deepEqual(f.keyCalls, ['https://api.example.test/v1/chat/completions']);
+    assert.equal(f.apiCalls[0].url, 'https://api.example.test/v1/chat/completions');
+    assert.equal(f.apiCalls[0].options.headers.Authorization, 'Bearer fixture-only-key');
+    const body = f.apiCalls[0].options.body;
+    const payload = JSON.parse(body);
+    const packetText = payload.messages.at(-1).content;
+    const packet = JSON.parse(packetText.slice(packetText.indexOf('{')));
+    assert.equal(packet.project.name, '测试项目 A');
+    assert.deepEqual(packet.requestedFields, [{ id: 'custom_project_method', label: '本项目方法', requirement: '仅记录研究设计与样本' }]);
+    assert.equal(packet.paper.title, f.row.title);
+    assert.equal(packet.paper.abstract, '模拟公开摘要');
+    assert.ok(packet.source.text.includes('论文原文片段'));
+    assert.ok(!body.includes('PRIVATE_REMARK_DO_NOT_SEND'));
+    assert.ok(!body.includes('PRIVATE_ANNOTATION_DO_NOT_SEND'));
+    assert.ok(!body.includes('PRIVATE_COMMENT_DO_NOT_SEND'));
+    assert.equal(f.batchSaves.length, 0);
+    assert.equal(f.row.values.custom_project_method, undefined);
+  } finally { f.cleanup(); }
+});
+
+test('changing API destination after preview blocks generation before reading any key or sending paper text', async () => {
+  const f = await ui();
+  try {
+    await f.click(f.document.querySelector('.ai-summary'));
+    f.setAIConfig({ ...f.aiConfig(), baseURL: 'https://different.example.test/v1' });
+    await f.run('aiManager.generate()');
+    assert.equal(f.keyCalls.length, 0);
+    assert.equal(f.apiCalls.length, 0);
+    assert.equal(f.batchSaves.length, 0);
+    assert.ok(f.document.querySelector('#rg-ai-error').textContent.includes('刷新 API 设置'));
+  } finally { f.cleanup(); }
+});
+
+test('AI drafts update main table values only after explicit aggregate save, preserving unselected human content', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '人工备注保留';
+    await f.run('showAI(state.rows[0])');
+    await f.run('aiManager.generate()');
+    assert.equal(f.apiCalls.length, 1);
+    assert.equal(f.batchSaves.length, 0);
+    assert.equal(f.row.values.findings, '');
+    assert.equal(f.row.values.remarks, '人工备注保留');
+    const chosen = f.run('[...aiManager.applySelected]');
+    assert.ok(chosen.includes('findings'));
+    assert.ok(!chosen.includes('remarks'));
+    assert.equal(await f.run('aiManager.apply()'), true);
+    assert.equal(f.batchSaves.length, 1, 'all checked fields use one aggregate repository operation');
+    assert.equal(f.batchSaves[0].projectID, PROJECT_A);
+    assert.equal(f.batchSaves[0].expected.findings, '');
+    assert.equal(f.batchSaves[0].changes.remarks, undefined);
+    assert.equal(f.row.values.findings, 'AI 草稿：核心结论');
+    assert.equal(f.row.values.remarks, '人工备注保留');
+    assert.equal(f.row.noteKey, 'AI_NOTEKEY');
+    assert.equal(f.row.noteURL, 'zotero://select/library/items/AI_NOTEKEY');
+    assert.ok(f.cell('findings').textContent.includes('AI 草稿：核心结论'));
+    assert.ok(f.document.querySelector('#saveStatus').textContent.includes('AI 草稿已写入'));
+  } finally { f.cleanup(); }
+});
+
+test('API config changed during endpoint-bound key lookup never sends the retrieved key', async () => {
+  const f = await ui();
+  try {
+    await f.run('showAI(state.rows[0])');
+    let resolveKey;
+    f.keyProvider(() => new Promise(resolve => { resolveKey = resolve; }));
+    const request = f.run('aiManager.generate()');
+    await settle();
+    assert.deepEqual(f.keyCalls, ['https://api.example.test/v1/chat/completions']);
+    f.setAIConfig({ ...f.aiConfig(), baseURL: 'https://changed.example.test/v1' });
+    resolveKey('should-never-be-sent');
+    await request;
+    assert.equal(f.apiCalls.length, 0);
+    assert.ok(f.document.querySelector('#rg-ai-error').textContent.includes('API 设置已变化'));
+    assert.equal(f.row.values.findings, '');
   } finally { f.cleanup(); }
 });

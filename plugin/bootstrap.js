@@ -19,13 +19,17 @@ async function startup({ rootURI, id, version }) {
   chromeHandle = manager.registerChrome(Services.io.newURI(rootURI + "manifest.json"), [
     ["content", "projectlitmatrix", rootURI + "content/"],
   ]);
-  Zotero.ProjectLitMatrix = { open: openMatrix, openFields: win => openMatrix(win, { fields: true }), version };
+  const credentialScope = {};
+  Services.scriptloader.loadSubScript(rootURI + "content/credentials.js", credentialScope);
+  Zotero.ProjectLitMatrix = { open: openMatrix, openFields: win => openMatrix(win, { fields: true }), version,
+    credentials: credentialScope.RGCredentials.create({ Services, Components }),
+    openSettings: () => Zotero.Utilities.Internal.openPreferences("research-grid-preferences") };
   preferencePaneID = await Zotero.PreferencePanes.register({
     pluginID: id,
     id: "research-grid-preferences",
     label: "研矩",
     src: rootURI + "content/preferences.xhtml",
-    scripts: [rootURI + "content/preferences.js"],
+    scripts: [rootURI + "content/ai.js", rootURI + "content/preferences.js"],
   });
   for (const win of Zotero.getMainWindows()) addToWindow(win);
 }

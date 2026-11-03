@@ -35,3 +35,11 @@ npm run build
 字段依靠稳定 ID 匹配笔记，改名需把旧名称保留在 aliases 中，以便原生笔记编辑器移除自定义属性后仍可恢复。移出字段只设 archived，禁止删笔记分区。默认字段的原中文名称作为旧数据身份保留。字段定义和模板存本机偏好，模板应用必须复制定义，不共享可变对象。
 
 表格内编辑和弹窗共享原值与草稿，保存事务的并发检查继续使用打开时原值。键盘事件和表单提交需要同步 preventDefault，再执行异步保存。
+
+## AI 请求与凭据
+
+API 配置的公共字段存 `extensions.researchgrid.ai`；凭据通过独立 origin + 最终 API 地址 realm 存入本机 LoginManager，不得写入 Prefs 或日志。新版使用 searchLoginsAsync/addLoginAsync/modifyLoginAsync/removeLoginAsync，Zotero 7 保留同步回退。生成时同时校验预览中的公开配置与当前配置，并以已展示的地址读取对应密钥，防止更改服务时密钥串用。
+
+原文文本属于待分析数据，不能作为工具或系统指令。请求只含选定字段及要求、项目名、论文元数据和选定文本，不包含原有分析/备注/批注。必须显示来源覆盖与截取，不得暗示索引等于全文。生成只产生草稿，写入调用 `saveFields()` 对全部选中原值一起检查并事务保存。
+
+参考：[OpenAI Chat Completions 官方格式](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[Awesome GPT](https://github.com/MuiseDestiny/zotero-gpt)、[llm-for-zotero API 地址处理](https://github.com/yilewang/llm-for-zotero/blob/main/src/utils/apiHelpers.ts)、[llm-for-zotero 请求客户端](https://github.com/yilewang/llm-for-zotero/blob/main/src/utils/llmClient.ts)。实现没有读取其他插件的用户配置或密钥。
