@@ -13,8 +13,11 @@
     <description id="research-grid-preferences-error" role="alert" />
   </groupbox>
   <groupbox id="research-grid-feature-settings">
-    <label><html:h2>功能设置</html:h2></label>
-    <description>后续新增的功能设置将在这里提供。</description>
+    <label><html:h2>项目字段与模板</html:h2></label>
+    <description>为当前项目编辑字段名称、填写要求、显示顺序，也可以应用通用模板或保存自己的模板。</description>
+    <hbox><button id="research-grid-open-fields" label="编辑项目字段与模板"
+      oncommand="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.openFields();" /></hbox>
+    <description>先在 Zotero 主窗口选择项目分类。字段定义与模板保存在本机，分析和备注仍保存为 Zotero 项目笔记。</description>
   </groupbox>
   <description>研矩 · ResearchGrid <html:span id="research-grid-version" /></description>
 </vbox>

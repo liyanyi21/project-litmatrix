@@ -19,7 +19,7 @@ async function startup({ rootURI, id, version }) {
   chromeHandle = manager.registerChrome(Services.io.newURI(rootURI + "manifest.json"), [
     ["content", "projectlitmatrix", rootURI + "content/"],
   ]);
-  Zotero.ProjectLitMatrix = { open: openMatrix, version };
+  Zotero.ProjectLitMatrix = { open: openMatrix, openFields: win => openMatrix(win, { fields: true }), version };
   preferencePaneID = await Zotero.PreferencePanes.register({
     pluginID: id,
     id: "research-grid-preferences",
@@ -67,22 +67,28 @@ function selectedProject(win) {
   } catch (_) { return null; }
 }
 
-function openMatrix(win) {
+function openMatrix(win, options = {}) {
   win = win || Zotero.getMainWindow();
   if (win?.ZoteroPane) Zotero.ProjectLitMatrix.hostWindow = win;
   const target = selectedProject(win);
   const existing = Services.wm.getMostRecentWindow(PLM_WINDOW);
   if (existing) {
     existing.focus();
-    if (target) {
-      if (existing.ProjectLitMatrixUI) existing.ProjectLitMatrixUI.selectProject(target);
-      else existing.__plmRequestedProject = target;
+    if (existing.ProjectLitMatrixUI) {
+      Promise.resolve(target ? existing.ProjectLitMatrixUI.selectProject(target) : null)
+        .then(() => { if (options.fields) existing.ProjectLitMatrixUI.showFields(); })
+        .catch(error => Zotero.logError(error));
+    } else {
+      if (target) existing.__plmRequestedProject = target;
+      if (options.fields) existing.__plmOpenFields = true;
     }
-    return;
+    return existing;
   }
   const query = target ? `?library=${target.libraryID}&collection=${encodeURIComponent(target.collectionKey)}` : "";
-  win.openDialog("chrome://projectlitmatrix/content/matrix.html" + query,
+  const matrix = win.openDialog("chrome://projectlitmatrix/content/matrix.html" + query,
     "project-litmatrix-window", "chrome,resizable,centerscreen,dialog=no,width=1440,height=900");
+  if (options.fields) matrix.__plmOpenFields = true;
+  return matrix;
 }
 
 function shutdown(data, reason) {

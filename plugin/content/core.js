@@ -18,8 +18,8 @@
     return `${library.libraryType === "group" ? `group:${library.groupID}` : "user"}:collection:${collectionKey}`;
   }
   const noteTag = (project) => NOTE_PREFIX + project;
-  const blankValues = () => Object.fromEntries(FIELDS.map(f => [f.id, ""]));
-  const fieldByID = (id) => FIELDS.find(f => f.id === id);
+  const blankValues = (fields = FIELDS) => Object.fromEntries(fields.map(f => [f.id, ""]));
+  const fieldByID = (id, fields = FIELDS) => fields.find(f => f.id === id);
   const escapeHTML = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const valueHTML = (s) => String(s).split(/\n\s*\n/).map(p => `<p>${escapeHTML(p).replace(/\n/g, "<br>")}</p>`).join("");
   function plainNode(node) {
@@ -29,36 +29,54 @@
     const text = [...node.childNodes].map(plainNode).join("");
     return text + (node.tagName === "P" ? "\n\n" : ["DIV", "LI", "UL", "OL", "BLOCKQUOTE", "PRE"].includes(node.tagName) ? "\n" : "");
   }
-  function parseNote(html, Parser = root.DOMParser) {
+  function parseNote(html, Parser = root.DOMParser, fields = FIELDS) {
     const doc = new Parser().parseFromString(`<html><body>${html}</body></html>`, "text/html");
     const container = doc.body.querySelector(":scope > div") || doc.body;
-    const values = blankValues();
+    const values = blankValues(fields);
     const headings = new Map();
     const allHeadings = [...container.querySelectorAll("h2")];
-    for (const field of FIELDS) {
-      const found = allHeadings.filter(h => h.getAttribute("data-plm-field") === field.id ||
-        (!h.getAttribute("data-plm-field") && h.textContent.trim() === field.label));
-      if (found.length > 1) throw new Error(`笔记中存在重复的“${field.label}”分区，请先在 Zotero 中合并。`);
-      if (!found.length) continue;
-      const heading = found[0];
-      headings.set(field.id, heading);
+    const originalLabels = new Map(FIELDS.map(f => [f.label, f.id]));
+    const labelIDs = new Map();
+    for (const field of fields) {
+      for (const label of [field.label, ...(field.aliases || [])]) {
+        if (!labelIDs.has(label)) labelIDs.set(label, new Set());
+        labelIDs.get(label).add(field.id);
+      }
+    }
+    for (const heading of allHeadings) {
+      const label = heading.textContent.trim();
+      let id = heading.getAttribute("data-plm-field");
+      if (!id) {
+        // Old note editors can strip custom attributes. Original built-in labels
+        // keep their original identity, even if a project later renames fields.
+        id = originalLabels.get(label);
+        if (!id) {
+          const candidates = labelIDs.get(label);
+          if (candidates?.size > 1) throw new Error(`无法唯一识别“${label}”分区，请先核对字段名称。`);
+          id = candidates?.values().next().value;
+        }
+      }
+      if (!id) continue;
+      if (headings.has(id)) throw new Error(`笔记中存在重复的“${fieldByID(id, fields)?.label || label}”分区，请先在 Zotero 中合并。`);
+      headings.set(id, heading);
       let text = "";
       for (let n = heading.nextSibling; n; n = n.nextSibling) {
         if (n.nodeType === 1 && ["H1", "H2"].includes(n.tagName)) break;
         text += plainNode(n);
       }
-      values[field.id] = text.trim();
+      // Preserve archived/unknown IDs too, without invoking magic object setters.
+      Object.defineProperty(values, id, { value: text.trim(), enumerable: true, writable: true, configurable: true });
     }
     return { doc, container, values, headings };
   }
-  function createNote(projectName, values = {}) {
+  function createNote(projectName, values = {}, fields = FIELDS) {
     return `<div data-schema-version="9"><h1>研矩 · ${escapeHTML(projectName)}</h1>` +
-      FIELDS.map(f => `<h2 data-plm-field="${f.id}">${f.label}</h2>${valueHTML(values[f.id] || "")}`).join("") + "</div>";
+      fields.filter(f => !f.archived).map(f => `<h2 data-plm-field="${escapeHTML(f.id)}">${escapeHTML(f.label)}</h2>${valueHTML(values[f.id] || "")}`).join("") + "</div>";
   }
-  function updateNote(html, id, value, Parser = root.DOMParser) {
-    const field = fieldByID(id);
-    if (!field) throw new Error("未知的分析字段。");
-    const { doc, container, headings } = parseNote(html, Parser);
+  function updateNote(html, id, value, Parser = root.DOMParser, fields = FIELDS) {
+    const field = fieldByID(id, fields);
+    if (!field || field.archived) throw new Error("未知或已移除的分析字段。");
+    const { doc, container, headings } = parseNote(html, Parser, fields);
     let heading = headings.get(id);
     if (heading) {
       for (let n = heading.nextSibling; n && !(n.nodeType === 1 && ["H1", "H2"].includes(n.tagName));) {
@@ -68,9 +86,9 @@
       }
     } else {
       heading = doc.createElement("h2");
-      heading.textContent = field.label;
       container.append(heading);
     }
+    heading.textContent = field.label;
     heading.setAttribute("data-plm-field", id);
     const fresh = doc.createElement("div");
     // Only escaped plain text produced by valueHTML enters this inert document.
@@ -87,14 +105,15 @@
     return `zotero://open-pdf/${libraryPath(library)}/items/${attachmentKey}` +
       (annotationKey ? `?annotation=${encodeURIComponent(annotationKey)}` : "");
   }
-  function filterRows(rows, query = "", state = "all") {
+  function filterRows(rows, query = "", state = "all", fields = FIELDS) {
+    const active = fields.filter(f => !f.archived);
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return rows.filter(r => {
-      const hasAnalysis = FIELDS.some(f => (r.values[f.id] || "").trim());
+      const hasAnalysis = active.some(f => (r.values[f.id] || "").trim());
       if (state === "filled" && !hasAnalysis) return false;
       if (state === "empty" && hasAnalysis) return false;
       const text = [r.title, r.authors, r.year, r.citekey, ...(r.tags || []),
-        ...Object.values(r.values), ...(r.annotations || []).map(a => `${a.text} ${a.comment}`)].join("\n").toLowerCase();
+        ...active.map(f => r.values[f.id] || ""), ...(r.annotations || []).map(a => `${a.text} ${a.comment}`)].join("\n").toLowerCase();
       return terms.every(t => text.includes(t));
     });
   }
@@ -104,11 +123,12 @@
     if (/^[\s\uFEFF]*[=+@-]/u.test(text)) text = "'" + text;
     return `"${text.replace(/"/g, '""')}"`;
   }
-  function toCSV(rows, projectName, projectKey) {
-    const header = ["项目", "项目标识", "作者", "年份", "标题", "引用键", "标签", ...FIELDS.map(f => f.label),
+  function toCSV(rows, projectName, projectKey, fields = FIELDS) {
+    const active = fields.filter(f => !f.archived);
+    const header = ["项目", "项目标识", "作者", "年份", "标题", "引用键", "标签", ...active.map(f => f.label),
       "批注数量", "项目笔记链接", "文献链接", "原文链接"];
     const data = rows.map(r => [projectName, projectKey, r.authors, r.year, r.title, r.citekey,
-      (r.tags || []).join("; "), ...FIELDS.map(f => r.values[f.id] || ""),
+      (r.tags || []).join("; "), ...active.map(f => r.values[f.id] || ""),
       r.annotations.length, r.noteURL || "", r.itemURL, r.pdfURL]);
     return "\uFEFF" + [header, ...data].map(row => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
   }

@@ -130,3 +130,40 @@ test('current collection uses the host window and plural selection API on Zotero
   f.Z.ProjectLitMatrix.hostWindow.ZoteroPane.getSelectedCollections = () => [f.a, f.a];
   assert.equal(f.repo.currentProject(), null);
 });
+
+test('custom fields save independently by project and survive label changes', async () => {
+  const f = fixture();
+  const field = { id: 'custom_project_question', label: '研究问题', requirement: '当前项目需要回答什么', visible: true };
+  f.projectA.fields = [field];
+  f.projectB.fields = [{ ...field, label: '另一个项目的问题' }];
+  await f.repo.saveField(f.projectA, f.row, field.id, '项目 A 的问题', '');
+  await f.repo.saveField(f.projectB, f.row, field.id, '项目 B 的问题', '');
+  f.projectA.fields = [{ ...field, label: '重新命名的问题' }];
+  assert.equal((await f.repo.noteFor(f.parent, f.projectA)).values[field.id], '项目 A 的问题');
+  assert.equal((await f.repo.loadProject(f.projectB))[0].values[field.id], '项目 B 的问题');
+  await f.repo.saveField(f.projectA, f.row, field.id, '项目 A 更新', '项目 A 的问题');
+  assert.equal((await f.repo.noteFor(f.parent, f.projectA)).values[field.id], '项目 A 更新');
+  assert.equal((await f.repo.noteFor(f.parent, f.projectB)).values[field.id], '项目 B 的问题');
+  assert.equal(f.parent.notes.length, 2);
+});
+test('archived fields cannot be saved and retain note data when other custom fields change', async () => {
+  const f = fixture();
+  const field = { id: 'custom_archived', label: '待归档字段', visible: true };
+  const other = { id: 'custom_current', label: '当前字段', visible: true };
+  f.projectA.fields = [field, other];
+  await f.repo.saveField(f.projectA, f.row, field.id, '历史内容', '');
+  f.projectA.fields = [{ ...field, archived: true }, other];
+  await assert.rejects(f.repo.saveField(f.projectA, f.row, field.id, '不能覆盖', '历史内容'), /已移除/);
+  await f.repo.saveField(f.projectA, f.row, other.id, '新字段内容', '');
+  const values = (await f.repo.noteFor(f.parent, f.projectA)).values;
+  assert.equal(values[field.id], '历史内容');
+  assert.equal(values[other.id], '新字段内容');
+});
+test('custom field stale saves reject conflicts without overwriting another edit', async () => {
+  const f = fixture();
+  const field = { id: 'custom_conflict', label: '项目字段', visible: true };
+  f.projectA.fields = [field];
+  await f.repo.saveField(f.projectA, f.row, field.id, '新窗口已保存', '');
+  await assert.rejects(f.repo.saveField(f.projectA, f.row, field.id, '旧窗口草稿', ''), /其他窗口/);
+  assert.equal((await f.repo.noteFor(f.parent, f.projectA)).values[field.id], '新窗口已保存');
+});

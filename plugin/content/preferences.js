@@ -10,10 +10,18 @@ var ResearchGridPreferences = {
   },
 
   openMatrix() {
+    this.launch("open");
+  },
+
+  openFields() {
+    this.launch("openFields");
+  },
+
+  launch(action) {
     const error = document.getElementById("research-grid-preferences-error");
     error.textContent = "";
     try {
-      Zotero.ProjectLitMatrix.open();
+      Zotero.ProjectLitMatrix[action]();
     } catch (e) {
       Zotero.logError(e);
       error.textContent = "文献矩阵暂时无法打开，请关闭设置窗口后从工具菜单重试。";

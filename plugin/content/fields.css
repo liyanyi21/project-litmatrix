@@ -1,0 +1,31 @@
+/* Project field editor: scoped to avoid changing matrix and Zotero preferences. */
+#fieldManagerDialog { width:min(900px,94vw); padding:24px; max-height:90vh; }
+#fieldManagerDialog h2 { margin:0; font-size:20px; }
+#fieldManagerDialog h3 { margin:0 0 9px; font-size:14px; }
+.rg-fields-heading,.rg-fields-row,.rg-fields-footer { display:flex; align-items:center; gap:9px; }
+.rg-fields-heading { justify-content:space-between; margin:16px 0 12px; }
+.rg-fields-heading:first-child { margin-top:0; }
+.rg-fields-close { background:none; border:0; font-size:25px; padding:0 5px; }
+.rg-fields-project { margin:7px 0; color:var(--accent); font-weight:600; overflow-wrap:anywhere; }
+.rg-fields-hint { color:var(--muted); font-size:12px; line-height:1.6; margin:7px 0 12px; }
+.rg-fields-templates { border:1px solid var(--line); border-radius:8px; padding:14px; margin:17px 0; background:var(--bg); }
+.rg-fields-row { flex-wrap:wrap; }
+.rg-fields-row + .rg-fields-row { margin-top:10px; }
+.rg-fields-templates select { flex:1; min-width:200px; }
+#rg-template-name { flex:1; min-width:200px; }
+.rg-fields-list { display:grid; gap:12px; }
+.rg-fields-card { border:1px solid var(--line); padding:13px; border-radius:8px; background:var(--surface); }
+.rg-fields-name { flex:1; min-width:180px; }
+.rg-fields-name > span,.rg-fields-requirement > span { display:block; font-size:11px; color:var(--muted); margin-bottom:4px; }
+.rg-fields-name input { width:100%; }
+.rg-fields-check { display:flex; align-items:center; gap:5px; font-size:12px; }
+.rg-fields-card button { font-size:12px; padding:5px 8px; }
+.rg-fields-requirement { display:block; margin-top:10px; }
+#fieldManagerDialog input[type="text"],#fieldManagerDialog textarea { padding:7px 9px; border:1px solid var(--line); border-radius:5px; background:var(--surface); color:var(--ink); }
+.rg-fields-requirement textarea { display:block; width:100%; min-height:60px; max-height:160px; resize:vertical; line-height:1.5; }
+.rg-fields-archived { margin:20px 0; border-top:1px solid var(--line); padding-top:15px; }
+.rg-fields-archived .rg-fields-row { justify-content:space-between; padding:5px 0; }
+.rg-fields-archived span { overflow-wrap:anywhere; }
+.rg-fields-error { color:var(--danger); font-size:12px; white-space:pre-wrap; min-height:18px; margin:12px 0; }
+.rg-fields-footer { justify-content:flex-end; position:sticky; bottom:-24px; background:var(--surface); border-top:1px solid var(--line); padding:13px 0; margin-bottom:-13px; }
+@media(max-width:700px) { #fieldManagerDialog { padding:17px; } .rg-fields-row { gap:7px; } .rg-fields-name { flex-basis:100%; } .rg-fields-footer { bottom:-17px; } }

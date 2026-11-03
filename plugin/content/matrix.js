@@ -29,17 +29,50 @@ function readPrefs() {
   } catch (_) { /* damaged UI preferences should not affect notes */ }
 }
 function prefs() {
-  const key = state.project?.id;
-  if (!key) return { columns: C.FIELDS.filter(f => f.visible).map(f => f.id), recursive: true, sort: "title" };
-  const saved = state.preferences.projects[key] || {};
-  const columns = Array.isArray(saved.columns) ? saved.columns.filter(id => C.fieldByID(id)) : C.FIELDS.filter(f => f.visible).map(f => f.id);
-  return { ...saved, columns, recursive: saved.recursive !== false, sort: saved.sort || "title" };
+  const saved = state.preferences.projects[state.project?.id] || {};
+  let fields = RGFields.defaults();
+  if (Array.isArray(saved.fields)) {
+    try { fields = RGFields.normalize(saved.fields); } catch (e) { Z.logError(e); }
+  } else if (Array.isArray(saved.columns)) {
+    fields = fields.map(f => ({ ...f, visible: saved.columns.includes(f.id) }));
+  }
+  if (!fields.some(f => !f.archived && f.visible)) {
+    const first = fields.find(f => !f.archived);
+    if (first) first.visible = true;
+  }
+  return { ...saved, fields, columns: fields.filter(f => !f.archived && f.visible).map(f => f.id),
+    recursive: saved.recursive !== false, sort: saved.sort || "title" };
 }
+function allFields() { return prefs().fields; }
+function activeFields() { return allFields().filter(f => !f.archived); }
 function savePrefs(patch = {}) {
   if (!state.project) return;
-  state.preferences.projects[state.project.id] = { ...prefs(), ...patch };
-  state.preferences.lastProject = state.project.id;
-  Z.Prefs.set(PREF, JSON.stringify(state.preferences), true);
+  const next = { ...state.preferences, lastProject: state.project.id,
+    projects: { ...state.preferences.projects, [state.project.id]: { ...prefs(), ...patch } } };
+  Z.Prefs.set(PREF, JSON.stringify(next), true);
+  state.preferences = next;
+  state.project.fields = allFields();
+}
+let fieldManager;
+function showColumns() {
+  if (!state.project || state.loading) return;
+  if (!fieldManager) fieldManager = new RGFields.Manager({
+    document, getProject: () => state.project, getFields: allFields,
+    getTemplates: () => state.preferences.templates || [],
+    beforeOpen: () => !state.editing || closeEditor(),
+    saveFields: async fields => {
+      const normalized = RGFields.normalize(fields);
+      savePrefs({ fields: normalized, columns: normalized.filter(f => !f.archived && f.visible).map(f => f.id) });
+      await reload();
+    },
+    saveTemplates: async templates => {
+      const next = { ...state.preferences, templates };
+      Z.Prefs.set(PREF, JSON.stringify(next), true);
+      state.preferences = next;
+    },
+    notify: toast,
+  });
+  return fieldManager.open().catch(failure);
 }
 let toastTimer;
 function toast(message) {
@@ -58,8 +91,9 @@ function refreshChoices() {
 }
 function setBusy(value) {
   state.loading = value;
-  for (const id of ["project", "current", "recursive", "refresh"]) $("#" + id).disabled = value;
+  for (const id of ["project", "current", "recursive", "refresh", "columns"]) $("#" + id).disabled = value;
   $("#export").disabled = value || !state.shown.length;
+  $("#columns").disabled = value || !state.project;
   $("#results").setAttribute("aria-busy", String(value));
 }
 function syncControls() {
@@ -75,6 +109,12 @@ function syncControls() {
 async function selectProject(target) {
   const project = state.projects.find(p => typeof target === "string" ? p.id === target :
     p.libraryID === Number(target.libraryID) && p.collectionKey === target.collectionKey);
+  if (fieldManager?.dialog?.open) {
+    if (project?.id === state.project?.id) return true;
+    $("#project").value = state.project?.id || "";
+    toast("请先保存或关闭项目字段窗口，再切换项目。");
+    return false;
+  }
   if (state.editing && !closeEditor()) { $("#project").value = state.project?.id || ""; return; }
   if (!project) {
     if (target) throw new Error("找不到这个分类，请刷新项目列表。");
@@ -99,6 +139,7 @@ async function reload() {
     setBusy(false); syncControls(); render(); return;
   }
   const project = state.project;
+  project.fields = allFields();
   state.pendingReload = false;
   setBusy(true);
   state.rows = [];
@@ -126,9 +167,10 @@ async function reload() {
   }
 }
 function render() {
+  if (state.editing) return;
   const scroll = $("#results").scrollTop;
   const p = prefs();
-  state.shown = C.filterRows(state.rows, $("#search").value, $("#analysisState").value);
+  state.shown = C.filterRows(state.rows, $("#search").value, $("#analysisState").value, activeFields());
   const compare = (a, b) => {
     if (p.sort === "yearDesc" || p.sort === "yearAsc") {
       const diff = (Number(a.year) || 0) - (Number(b.year) || 0);
@@ -142,12 +184,13 @@ function render() {
     ? `${state.shown.length} / ${state.rows.length} 篇文献 · ${state.shown.reduce((n, r) => n + r.annotations.length, 0)} 条批注 · 包含未批注文献`
     : "请选择研究项目";
   $("#export").disabled = state.loading || !state.shown.length;
-  const fields = p.columns.map(C.fieldByID).filter(Boolean);
+  const fields = p.fields.filter(f => !f.archived && f.visible);
+  $("#columns").disabled = state.loading || !state.project;
   const widths = [320, ...fields.map(f => f.id === "remarks" ? 320 : 290)];
   $("#grid").style.width = `${widths.reduce((a, b) => a + b, 0)}px`;
   $("#grid colgroup").replaceChildren(...widths.map(width => h("col", { style: `width:${width}px` })));
   $("#grid thead").replaceChildren(h("tr", {}, h("th", { scope: "col" }, "文献与原文"),
-    ...fields.map(f => h("th", { scope: "col" }, f.label))));
+    ...fields.map(f => h("th", { scope: "col", title: f.requirement || f.label }, h("div", {}, f.label), f.requirement ? h("div", { class: "field-requirement" }, f.requirement) : null))));
   const fragment = document.createDocumentFragment();
   for (const row of state.shown) {
     const identity = h("td", { class: "identity" },
@@ -162,12 +205,22 @@ function render() {
       row.noteError ? h("p", { class: "error" }, row.noteError) : null,
       !row.editable && !row.noteError ? h("p", { class: "hint" }, row.paper.isAttachment() ? "独立附件：创建父条目后可填写分析" : "只读文献库") : null);
     const cells = fields.map(field => {
+      const value = row.values[field.id] || "";
       const td = h("td", { class: row.editable ? "analysis-cell" : "", tabindex: row.editable ? "0" : null,
-        "aria-label": `${row.title} · ${field.label}${row.editable ? "，按回车编辑" : ""}` },
-        row.values[field.id] ? h("div", { class: "cell-text" }, row.values[field.id]) : h("span", { class: "placeholder" }, row.editable ? "点击填写…" : "—"));
+        "data-row": row.id, "data-field": field.id,
+        "aria-label": `${row.title} · ${field.label}${row.editable ? "，按回车直接填写" : ""}` },
+        value ? h("div", { class: "cell-text" }, value) : h("span", { class: "placeholder" }, row.editable ? "点击直接填写…" : "—"));
       if (row.editable) {
-        td.addEventListener("click", () => openEditor(row, field));
-        td.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); openEditor(row, field); } });
+        td.append(h("button", { class: "expand-cell", title: "在弹窗中编辑长内容", onclick: safe(async event => {
+          event.stopPropagation(); await openEditor(row, field, "modal");
+        }) }, "展开编辑"));
+        td.addEventListener("click", safe(event => {
+          if (event.target.closest("button, textarea, input")) return;
+          return openEditor(row, field);
+        }));
+        td.addEventListener("keydown", event => {
+          if (event.target === td && event.key === "Enter") { event.preventDefault(); safe(() => openEditor(row, field))(); }
+        });
       }
       return td;
     });
@@ -180,59 +233,137 @@ function render() {
     h("p", {}, !state.project ? "在 Zotero 主窗口选择分类后，点击“使用当前分类”。" : state.rows.length ? "可以清空搜索或切换分析状态。" : "添加文献后点击刷新；子分类可通过上方开关包含。"));
   $("#results").scrollTop = scroll;
 }
-function openEditor(row, field) {
-  state.editing = { row, field, project: state.project, original: row.values[field.id] || "" };
+function editorValue() {
+  return state.editing?.mode === "inline" ? $("#inlineValue").value : $("#editValue").value;
+}
+function autoSizeInline() {
+  const input = $("#inlineValue");
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(170, Math.max(70, input.scrollHeight || 70))}px`;
+}
+async function openEditor(row, field, mode = "inline") {
+  if (state.saving) return false;
+  if (state.editing) {
+    if (state.editing.row.id === row.id && state.editing.field.id === field.id) {
+      if (mode === "modal") expandEditor();
+      return true;
+    }
+    // Committing the previous cell must succeed before moving to another one.
+    if (!(await saveEditor())) return false;
+  }
+  state.editing = { row, field, project: state.project, original: row.values[field.id] || "", mode };
+  if (mode === "modal") {
+    prepareDialog(state.editing.original);
+  } else {
+    const cell = [...$("#grid tbody").querySelectorAll("td[data-field]")]
+      .find(td => td.getAttribute("data-row") === String(row.id) && td.getAttribute("data-field") === field.id);
+    if (!cell) { state.editing = null; return false; }
+    state.editing.cell = cell;
+    cell.classList.add("editing-cell");
+    const input = h("textarea", { id: "inlineValue", rows: 3, "aria-label": `${field.label} · 直接填写`,
+      placeholder: field.requirement || "直接填写，Shift+Enter 换行", oninput: autoSizeInline,
+      onkeydown: event => {
+        if (event.isComposing) return;
+        if (event.key === "Escape") { event.preventDefault(); closeEditor(); }
+        else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); safe(saveEditor)(); }
+        else if (event.key === "Tab") { event.preventDefault(); safe(() => saveAndMove(event.shiftKey ? -1 : 1))(); }
+      } });
+    input.value = state.editing.original;
+    cell.replaceChildren(...[input,
+      field.requirement ? h("p", { class: "inline-requirement" }, field.requirement) : null,
+      h("div", { class: "inline-actions" },
+        h("button", { id: "inlineSave", class: "primary", onclick: safe(saveEditor) }, "保存"),
+        h("button", { id: "inlineExpand", onclick: expandEditor }, "展开编辑"),
+        h("button", { id: "inlineCancel", onclick: () => closeEditor() }, "取消")),
+      h("p", { class: "inline-help" }, "Enter 保存 · Shift+Enter 换行 · Tab 下一格"),
+      h("p", { id: "inlineError", class: "error", role: "alert" })].filter(Boolean));
+    // Events on the inline controls must not open another editor on the parent cell.
+    for (const event of ["click", "keydown"]) cell.addEventListener(event, e => e.stopPropagation());
+    autoSizeInline(); input.focus();
+  }
+  return true;
+}
+function prepareDialog(value) {
+  const { row, field, project } = state.editing;
   $("#editHeading").textContent = field.label;
-  $("#editContext").textContent = `${state.project.name} · ${row.title}`;
-  $("#editValue").value = state.editing.original;
+  $("#editContext").textContent = `${project.name} · ${row.title}`;
+  $("#editRequirement").textContent = field.requirement || "";
+  $("#editRequirement").hidden = !field.requirement;
+  $("#editValue").value = value;
+  $("#editValue").placeholder = field.requirement || "填写你的分析，支持多行文本…";
   $("#editError").textContent = "";
-  $("#editDialog").showModal();
-  $("#editValue").focus();
+  $("#editDialog").showModal(); $("#editValue").focus();
+}
+function expandEditor() {
+  if (!state.editing || state.saving || state.editing.mode === "modal") return;
+  const value = editorValue();
+  state.editing.mode = "modal";
+  state.editing.cell.replaceChildren(h("div", { class: "cell-text" }, value), h("span", { class: "placeholder" }, "正在弹窗中编辑…"));
+  prepareDialog(value);
+}
+function collapseEditor() {
+  if (!state.editing || state.saving) return;
+  const previous = state.editing;
+  const { row, field, original } = previous;
+  const value = editorValue();
+  // Keep the existing row in place: pending search/filter changes must not hide
+  // it between collapsing the modal and mounting the inline draft.
+  state.editing = null; $("#editDialog").close();
+  return openEditor(row, field).then(opened => {
+    if (!opened || !state.editing) {
+      state.editing = { ...previous, mode: "modal" };
+      prepareDialog(value);
+      return;
+    }
+    state.editing.original = original;
+    $("#inlineValue").value = value; autoSizeInline();
+  }).catch(failure);
 }
 function closeEditor(force = false) {
   if (state.saving) return false;
-  if (!force && state.editing && $("#editValue").value !== state.editing.original && !window.confirm("放弃尚未保存的分析内容？")) return false;
+  if (!force && state.editing && editorValue() !== state.editing.original && !window.confirm("放弃尚未保存的分析内容？")) return false;
   state.editing = null;
-  $("#editDialog").close();
+  $("#editDialog").close(); render();
   if (state.pendingReload) scheduleReload();
   return true;
 }
+async function saveAndMove(direction) {
+  const cells = [...$("#grid tbody").querySelectorAll("td.analysis-cell")];
+  const old = state.editing;
+  const at = cells.findIndex(td => td.getAttribute("data-row") === String(old.row.id) && td.getAttribute("data-field") === old.field.id);
+  const next = cells[at + direction];
+  const target = next ? { rowID: next.getAttribute("data-row"), fieldID: next.getAttribute("data-field") } : null;
+  if (!(await saveEditor()) || !target) return;
+  const row = state.shown.find(r => String(r.id) === target.rowID);
+  const field = activeFields().find(f => f.id === target.fieldID);
+  if (row && field) await openEditor(row, field);
+}
 async function saveEditor(event) {
-  event?.preventDefault();
-  if (!state.editing || state.saving) return;
-  const { row, field, project, original } = state.editing;
+  event?.preventDefault(); event?.stopPropagation?.();
+  if (!state.editing || state.saving) return false;
+  const { row, field, project, original, mode } = state.editing;
+  const value = editorValue();
   state.saving = true;
-  $("#editSave").disabled = true;
-  $("#editCancel").disabled = true;
-  $("#editClose").disabled = true;
-  $("#editValue").disabled = true;
-  $("#editError").textContent = "";
+  const controls = mode === "inline" ? ["inlineSave", "inlineCancel", "inlineExpand", "inlineValue"] : ["editSave", "editCancel", "editClose", "editCollapse", "editValue"];
+  for (const id of controls) $("#" + id).disabled = true;
+  const error = mode === "inline" ? $("#inlineError") : $("#editError");
+  error.textContent = "";
   let successful = false;
   try {
-    const saved = await repo.saveField(project, row, field.id, $("#editValue").value, original);
+    const saved = await repo.saveField(project, row, field.id, value, original);
     row.values = saved.values;
     row.noteKey = saved.note?.key || null;
     row.noteURL = row.noteKey ? C.itemLink(project.library, row.noteKey) : "";
     $("#saveStatus").textContent = "已保存到项目子笔记";
     successful = true;
-  } catch (e) {
-    Z.logError(e);
-    $("#editError").textContent = e.message || String(e);
-  } finally {
+  } catch (e) { Z.logError(e); error.textContent = e.message || String(e); }
+  finally {
     state.saving = false;
-    for (const id of ["editSave", "editCancel", "editClose", "editValue"]) $("#" + id).disabled = false;
+    for (const id of controls) $("#" + id).disabled = false;
   }
-  if (successful) { closeEditor(true); render(); toast(`已保存“${field.label}”`); }
-}
-function showColumns() {
-  $("#fieldChoices").replaceChildren(...C.FIELDS.map(field => h("label", {},
-    h("input", { type: "checkbox", checked: prefs().columns.includes(field.id), onchange: event => {
-      const ids = new Set(prefs().columns);
-      if (event.target.checked) ids.add(field.id); else ids.delete(field.id);
-      savePrefs({ columns: C.FIELDS.filter(f => ids.has(f.id)).map(f => f.id) });
-      render();
-    } }), field.label)));
-  $("#columnsDialog").showModal();
+  if (successful) { closeEditor(true); toast(`已保存“${field.label}”`); }
+  return successful;
 }
 function showAnnotations(row) {
   $("#annotationTitle").textContent = row.title;
@@ -246,7 +377,7 @@ function showAnnotations(row) {
 async function exportCSV() {
   if (!state.project || !state.shown.length) return;
   const project = state.project;
-  const csv = C.toCSV(state.shown, project.name, project.id);
+  const csv = C.toCSV(state.shown, project.name, project.id, activeFields());
   const count = state.shown.length;
   const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
   const fp = new FilePicker();
@@ -257,7 +388,7 @@ async function exportCSV() {
   const result = await fp.show();
   if (result !== fp.returnOK && result !== fp.returnReplace) return;
   await Z.File.putContentsAsync(fp.file, csv);
-  toast(`已导出 ${count} 篇文献（包含全部中文分析字段）`);
+  toast(`已导出 ${count} 篇文献（包含当前项目全部字段）`);
 }
 let reloadTimer;
 function scheduleReload() {
@@ -282,25 +413,26 @@ async function init() {
   $("#refresh").addEventListener("click", safe(reload));
   $("#export").addEventListener("click", safe(exportCSV));
   $("#columns").addEventListener("click", showColumns);
-  $("#columnsClose").addEventListener("click", () => $("#columnsDialog").close());
   $("#annotationsClose").addEventListener("click", () => $("#annotationsDialog").close());
   let searchTimer;
   $("#search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { savePrefs({ search: $("#search").value }); render(); }, 150); });
   $("#analysisState").addEventListener("change", () => { savePrefs({ analysisState: $("#analysisState").value }); render(); });
   $("#sort").addEventListener("change", () => { savePrefs({ sort: $("#sort").value }); render(); });
-  $("#editForm").addEventListener("submit", safe(saveEditor));
+  $("#editCollapse").addEventListener("click", collapseEditor);
+  $("#editForm").addEventListener("submit", event => { event.preventDefault(); safe(saveEditor)(); });
   for (const id of ["editCancel", "editClose"]) $("#" + id).addEventListener("click", () => closeEditor());
   $("#editDialog").addEventListener("cancel", event => { event.preventDefault(); closeEditor(); });
   $("#editValue").addEventListener("keydown", event => {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); safe(saveEditor)(); }
+    if (!event.isComposing && event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); safe(saveEditor)(); }
   });
   window.addEventListener("beforeunload", event => {
-    if (state.saving || (state.editing && $("#editValue").value !== state.editing.original)) { event.preventDefault(); event.returnValue = ""; }
+    if (state.saving || (state.editing && editorValue() !== state.editing.original) ||
+      (fieldManager?.dialog?.open && (fieldManager.busy || fieldManager.dirty()))) { event.preventDefault(); event.returnValue = ""; }
   });
   const observerID = Z.Notifier.registerObserver({ notify: () => scheduleReload() },
     ["item", "item-tag", "collection", "collection-item"], "projectlitmatrix");
   window.addEventListener("unload", () => { Z.Notifier.unregisterObserver(observerID); clearTimeout(reloadTimer); clearTimeout(toastTimer); clearTimeout(searchTimer); });
-  window.ProjectLitMatrixUI = { selectProject, reload };
+  window.ProjectLitMatrixUI = { selectProject, reload, showFields: showColumns };
   const query = new URLSearchParams(location.search);
   const requested = window.__plmRequestedProject || (query.get("collection") ? { libraryID: query.get("library"), collectionKey: query.get("collection") } : null);
   const initial = requested || repo.currentProject()?.id || state.preferences.lastProject;
@@ -308,5 +440,6 @@ async function init() {
     const exists = state.projects.some(p => typeof initial === "string" ? p.id === initial : p.libraryID === Number(initial.libraryID) && p.collectionKey === initial.collectionKey);
     if (exists) await selectProject(initial); else render();
   } else render();
+  if (window.__plmOpenFields) showColumns();
 }
 init().catch(error => { $("#status").textContent = error.message || String(error); if (Z) Z.logError(error); });

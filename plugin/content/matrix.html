@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <title>研矩 · ResearchGrid</title>
-  <link rel="stylesheet" href="matrix.css">
+  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css">
 </head>
 <body>
   <header>
-    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.1.2</span></div>
+    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.2.0</span></div>
     <div class="toolbar">
       <label class="project-label">研究项目<select id="project" aria-label="研究项目"><option value="">请选择 Zotero 分类</option></select></label>
       <button id="current">使用当前分类</button>
       <label class="check"><input id="recursive" type="checkbox" checked>包含子分类</label>
       <span class="spacer"></span>
-      <button id="columns">显示字段</button><button id="refresh">刷新</button><button id="export" class="primary" disabled>导出 CSV</button>
+      <button id="columns">项目字段与模板</button><button id="refresh">刷新</button><button id="export" class="primary" disabled>导出 CSV</button>
     </div>
     <div class="searchbar"><input id="search" type="search" placeholder="搜索文献、分析和批注，可组合多个关键词…" aria-label="搜索文献矩阵">
       <select id="analysisState" aria-label="分析状态"><option value="all">全部文献</option><option value="filled">已填写分析</option><option value="empty">尚未填写</option></select>
@@ -27,13 +27,12 @@
   </main>
   <dialog id="editDialog">
     <form id="editForm"><div class="dialog-title"><h2 id="editHeading"></h2><button type="button" id="editClose" class="icon" aria-label="关闭编辑">×</button></div>
-      <p id="editContext" class="hint"></p><textarea id="editValue" rows="10" aria-label="分析内容" placeholder="填写你的分析，支持多行文本…"></textarea>
-      <p id="editError" class="error" role="alert"></p><div class="dialog-actions"><span class="hint">⌘ / Ctrl + Enter 保存</span><span class="spacer"></span><button type="button" id="editCancel">取消</button><button id="editSave" class="primary" type="submit">保存</button></div>
+      <p id="editContext" class="hint"></p><p id="editRequirement" class="field-guidance" hidden></p><textarea id="editValue" rows="10" aria-label="分析内容" placeholder="填写你的分析，支持多行文本…"></textarea>
+      <p id="editError" class="error" role="alert"></p><div class="dialog-actions"><span class="hint">⌘ / Ctrl + Enter 保存</span><span class="spacer"></span><button type="button" id="editCollapse">回到表格</button><button type="button" id="editCancel">取消</button><button id="editSave" class="primary" type="submit">保存</button></div>
     </form>
   </dialog>
-  <dialog id="columnsDialog"><div class="dialog-title"><h2>中文分析字段</h2><button id="columnsClose" class="icon" aria-label="关闭字段设置">×</button></div><p class="hint">隐藏列不会删除已填写的内容。设置按项目保存。</p><div id="fieldChoices"></div></dialog>
   <dialog id="annotationsDialog"><div class="dialog-title"><h2>原文批注</h2><button id="annotationsClose" class="icon" aria-label="关闭原文批注">×</button></div><p id="annotationTitle" class="hint"></p><div id="annotationsList"></div></dialog>
   <div id="toast" role="status" hidden></div>
-  <script src="core.js"></script><script src="repository.js"></script><script src="matrix.js"></script>
+  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="matrix.js"></script>
 </body>
 </html>

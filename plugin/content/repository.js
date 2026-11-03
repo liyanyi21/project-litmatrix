@@ -56,7 +56,8 @@
       return all.filter(it => it && !it.deleted && !it.parentID && (it.isRegularItem() || it.isAttachment()));
     }
     async noteFor(paper, project) {
-      if (!paper.isRegularItem()) return { note: null, values: this.C.blankValues() };
+      const fields = project.fields || this.C.FIELDS;
+      if (!paper.isRegularItem()) return { note: null, values: this.C.blankValues(fields) };
       await this.Z.Items.loadDataTypes([paper], ["childItems"]);
       const notes = await this.Z.Items.getAsync(paper.getNotes());
       await this.Z.Items.loadDataTypes(notes.filter(Boolean), ["note", "tags"]);
@@ -65,7 +66,7 @@
         n.libraryID === project.libraryID && n.getTags().some(t => t.tag === marker));
       if (matches.length > 1) throw new Error("此文献有多份同项目笔记，请在 Zotero 中合并后再编辑。");
       const note = matches[0] || null;
-      return { note, values: note ? this.C.parseNote(note.getNote(), this.Parser).values : this.C.blankValues() };
+      return { note, values: note ? this.C.parseNote(note.getNote(), this.Parser, fields).values : this.C.blankValues(fields) };
     }
     info(paper, library) {
       const field = name => { try { return paper.getField(name) || ""; } catch (_) { return ""; } };
@@ -88,11 +89,12 @@
         editable: !!library.editable && paper.isRegularItem(), paper };
     }
     async loadProject(project, recursive = true) {
+      project = { ...project, fields: project.fields || this.C.FIELDS };
       const papers = await this.itemsFor(project, recursive);
       await this.Z.Items.loadDataTypes(papers, ["creators", "itemData", "tags", "childItems"]);
       const rows = [];
       for (const paper of papers) {
-        const row = { ...this.info(paper, project.library), values: this.C.blankValues(), annotations: [],
+        const row = { ...this.info(paper, project.library), values: this.C.blankValues(project.fields), annotations: [],
           noteKey: null, noteURL: "", noteError: "", pdfURL: "", attachmentID: null };
         const attachments = paper.isAttachment() ? [paper] : await this.Z.Items.getAsync(paper.getAttachments());
         const live = attachments.filter(a => a && !a.deleted);
@@ -128,7 +130,10 @@
       return [...doc.body.childNodes].map(this.C.plainNode).join("").trim();
     }
     async saveField(project, row, fieldID, value, expected) {
-      if (!this.C.fieldByID(fieldID)) throw new Error("未知分析字段。");
+      const fields = project.fields || this.C.FIELDS;
+      const field = this.C.fieldByID(fieldID, fields);
+      if (!field || field.archived) throw new Error("未知或已移除的分析字段。");
+      project = { ...project, fields };
       if (!row.editable || !this.Z.Libraries.get(project.libraryID)?.editable) throw new Error("此文献不能编辑项目笔记。");
       let saved;
       // Resolve notes again inside the transaction: don't write a stale UI snapshot.
@@ -147,12 +152,12 @@
           note.libraryID = project.libraryID;
           note.parentID = paper.id;
           note.addTag(this.C.noteTag(project.id));
-          note.setNote(this.C.createNote(project.name, { [fieldID]: value }));
+          note.setNote(this.C.createNote(project.name, { [fieldID]: value }, fields));
         } else {
-          note.setNote(this.C.updateNote(note.getNote(), fieldID, value, this.Parser));
+          note.setNote(this.C.updateNote(note.getNote(), fieldID, value, this.Parser, fields));
         }
         await note.save();
-        saved = { note, values: this.C.parseNote(note.getNote(), this.Parser).values };
+        saved = { note, values: this.C.parseNote(note.getNote(), this.Parser, fields).values };
       });
       return saved;
     }

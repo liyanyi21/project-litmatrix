@@ -64,3 +64,15 @@ dialog::backdrop { background:#152b224d; }
 #toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); z-index:10; padding:11px 19px; background:var(--ink); color:var(--surface); border-radius:8px; max-width:85vw; box-shadow:0 4px 25px #0003; }
 [hidden] { display:none !important; }
 @media(max-width:1000px) { .toolbar { flex-wrap:wrap; } #project { max-width:380px; } header { padding:16px; } #results { padding:0 16px 20px; } .statusline { padding:10px 16px; } }
+
+/* Inline editing keeps the rest of the literature matrix visible. */
+.field-requirement { color:var(--muted); font-size:11px; font-weight:400; line-height:1.45; margin-top:5px; max-height:48px; overflow:auto; white-space:pre-wrap; }
+.expand-cell { display:block; font-size:11px; padding:3px 7px; margin-top:12px; color:var(--accent); }
+.editing-cell { box-shadow:inset 0 0 0 2px var(--accent); white-space:normal; }
+#inlineValue { display:block; width:100%; min-height:70px; max-height:170px; resize:vertical; padding:8px; line-height:1.6; border:1px solid var(--accent); border-radius:5px; background:var(--surface); }
+.inline-actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+.inline-actions button { font-size:11px; padding:4px 7px; }
+.inline-help,.inline-requirement { font-size:11px; line-height:1.5; color:var(--muted); margin:8px 0 0; white-space:pre-wrap; }
+.field-guidance { padding:10px 12px; background:var(--soft); border-radius:6px; white-space:pre-wrap; font-size:12px; }
+#editDialog { width:min(780px,86vw); max-height:82vh; }
+#editValue { min-height:160px; height:32vh; max-height:48vh; }
