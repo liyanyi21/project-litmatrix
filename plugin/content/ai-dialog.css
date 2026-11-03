@@ -7,7 +7,7 @@
 .rg-ai-close { border:0; background:none; padding:0 5px; font-size:25px; }
 .rg-ai-project { color:var(--accent); font-weight:600; margin:8px 0 3px; }
 .rg-ai-paper { margin:0 0 16px; overflow-wrap:anywhere; }
-.rg-ai-destination,.rg-ai-source,.rg-ai-choices { margin:14px 0; padding:13px; border:1px solid var(--line); border-radius:8px; }
+.rg-ai-destination,.rg-ai-source,.rg-ai-choices,.rg-ai-summary-detail { margin:14px 0; padding:13px; border:1px solid var(--line); border-radius:8px; }
 .rg-ai-destination { background:var(--soft); }
 .rg-ai-destination p { margin:3px 0; overflow-wrap:anywhere; }
 .rg-ai-hint,.rg-ai-field-choice small { color:var(--muted); font-size:12px; line-height:1.55; }
@@ -20,6 +20,10 @@
 .rg-ai-field-choice input { margin-top:5px; }
 .rg-ai-field-choice small { display:block; font-weight:400; }
 .rg-ai-existing { color:var(--muted); font-size:11px; margin-left:5px; }
+.rg-ai-detail-buttons { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+#aiSummaryDialog .rg-ai-detail-button { min-width:72px; }
+#aiSummaryDialog .rg-ai-detail-button[aria-pressed="true"] { color:#fff; background:var(--accent); border-color:var(--accent); }
+.rg-ai-summary-detail p { margin:8px 0 0; }
 .rg-ai-warning { font-size:12px; color:var(--muted); line-height:1.6; }
 .rg-ai-actions { flex-wrap:wrap; margin:15px 0; }
 .rg-ai-status { font-size:12px; color:var(--accent); white-space:pre-wrap; }

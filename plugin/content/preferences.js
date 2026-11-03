@@ -26,6 +26,7 @@ var ResearchGridPreferences = {
       const config = this.store().getConfig();
       document.getElementById("rg-ai-url").value = config.baseURL;
       document.getElementById("rg-ai-model").value = config.model;
+      document.getElementById("rg-ai-summary-detail").value = config.summaryDetail;
       document.getElementById("rg-ai-max-chars").value = config.maxChars;
       document.getElementById("rg-ai-timeout").value = config.timeoutSeconds;
       document.getElementById("rg-ai-max-tokens").value = config.maxTokens;
@@ -46,6 +47,7 @@ var ResearchGridPreferences = {
     return RGAI.normalizeConfig({
       baseURL: document.getElementById("rg-ai-url").value,
       model: document.getElementById("rg-ai-model").value,
+      summaryDetail: document.getElementById("rg-ai-summary-detail").value,
       maxChars: Number(document.getElementById("rg-ai-max-chars").value),
       timeoutSeconds: Number(document.getElementById("rg-ai-timeout").value),
       maxTokens: Number(document.getElementById("rg-ai-max-tokens").value),
@@ -53,7 +55,7 @@ var ResearchGridPreferences = {
   },
   setAIBusy(value) {
     this.aiBusy = value;
-    for (const id of ["rg-ai-save", "rg-ai-test", "rg-ai-clear-key", "rg-ai-reset", "rg-ai-url", "rg-ai-model", "rg-ai-key", "rg-ai-max-chars", "rg-ai-timeout", "rg-ai-max-tokens"]) {
+    for (const id of ["rg-ai-save", "rg-ai-test", "rg-ai-clear-key", "rg-ai-reset", "rg-ai-url", "rg-ai-model", "rg-ai-summary-detail", "rg-ai-key", "rg-ai-max-chars", "rg-ai-timeout", "rg-ai-max-tokens"]) {
       document.getElementById(id).disabled = value;
     }
     document.getElementById("rg-ai-cancel").disabled = !value || !this.aiController;

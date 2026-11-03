@@ -26,6 +26,13 @@
     <html:input id="rg-ai-url" type="url" placeholder="https://your-provider.example/v1" style="width:100%" />
     <label control="rg-ai-model" value="模型名称" />
     <html:input id="rg-ai-model" type="text" placeholder="填写服务商提供的模型 ID" style="width:100%" />
+    <label control="rg-ai-summary-detail" value="默认总结篇幅（每个字段）" />
+    <html:select id="rg-ai-summary-detail" style="width:100%">
+      <html:option value="brief">简约 · 1–2 句关键事实</html:option>
+      <html:option value="detailed">详细 · 3–5 项事实与结果</html:option>
+      <html:option value="comprehensive">全面 · 列全相关事实、条件与数据</html:option>
+    </html:select>
+    <description>只整理原文明确报告的客观事实，不添加个人解读。每次生成前也可在 AI 总结窗口调整篇幅。</description>
     <label control="rg-ai-key" value="API Key" />
     <html:input id="rg-ai-key" type="password" autocomplete="off" placeholder="留空保留已保存的密钥" style="width:100%" />
     <description id="rg-ai-key-status">密钥按 API 地址分别保存在本机 Zotero 密码管理器，不读取其他插件的密钥。</description>

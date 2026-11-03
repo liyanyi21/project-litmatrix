@@ -132,7 +132,7 @@ function preferences({ legacy = false } = {}) {
   const controller = context.ResearchGridPreferences;
   function setInput(config = {}) {
     const values = { 'rg-ai-url': 'https://provider-a.example/v1', 'rg-ai-model': 'synthetic-model',
-      'rg-ai-max-chars': '60000', 'rg-ai-timeout': '120', 'rg-ai-max-tokens': '0', 'rg-ai-key': '', ...config };
+      'rg-ai-max-chars': '60000', 'rg-ai-timeout': '120', 'rg-ai-max-tokens': '0', 'rg-ai-summary-detail': 'brief', 'rg-ai-key': '', ...config };
     for (const [id, value] of Object.entries(values)) document.getElementById(id).value = value;
   }
   return { document, Zotero, context, windowContext, window: sharedWindow, controller, keys, keyCalls, savedPrefs, state,
@@ -274,4 +274,44 @@ test('connection test can be canceled without persisting inputs or exposing tran
   assert.equal(f.savedPrefs.size, 0); assert.equal(f.keys.size, 0);
   assert.equal(f.controller.aiBusy, false);
   assert.equal(f.document.getElementById('rg-ai-save').disabled, false);
+});
+
+
+test('summary detail is a saved local default that preserves the endpoint-bound key', async () => {
+  const f = preferences();
+  const endpoint = 'https://provider-a.example/v1/chat/completions';
+  f.keys.set(endpoint, 'synthetic-existing-key');
+  f.setInput({ 'rg-ai-summary-detail': 'comprehensive' });
+  await f.controller.saveAIConfig();
+  const saved = JSON.parse(f.savedPrefs.get(f.context.RGAI.CONFIG_PREF));
+  assert.equal(saved.summaryDetail, 'comprehensive');
+  assert.equal(saved.baseURL, 'https://provider-a.example/v1');
+  assert.equal(saved.model, 'synthetic-model');
+  assert.equal(f.keys.get(endpoint), 'synthetic-existing-key');
+  assert.equal(f.keyCalls.filter(call => call[0] !== 'get').length, 0);
+  f.document.getElementById('rg-ai-summary-detail').value = 'brief';
+  await f.controller.loadAIConfig();
+  assert.equal(f.document.getElementById('rg-ai-summary-detail').value, 'comprehensive');
+  f.controller.setAIBusy(true);
+  assert.equal(f.document.getElementById('rg-ai-summary-detail').disabled, true);
+  f.controller.setAIBusy(false);
+  assert.equal(f.document.getElementById('rg-ai-summary-detail').disabled, false);
+});
+
+test('old AI settings acquire the brief default without resetting provider, limits or secrets', async () => {
+  const f = preferences();
+  const endpoint = 'https://legacy-provider.example/v1/chat/completions';
+  f.keys.set(endpoint, 'synthetic-legacy-key');
+  f.savedPrefs.set(f.context.RGAI.CONFIG_PREF, JSON.stringify({
+    baseURL: 'https://legacy-provider.example/v1', model: 'legacy-model', maxChars: 80000,
+    timeoutSeconds: 180, maxTokens: 0,
+  }));
+  await f.controller.loadAIConfig();
+  assert.equal(f.document.getElementById('rg-ai-summary-detail').value, 'brief');
+  assert.equal(f.document.getElementById('rg-ai-url').value, 'https://legacy-provider.example/v1');
+  assert.equal(f.document.getElementById('rg-ai-model').value, 'legacy-model');
+  assert.equal(Number(f.document.getElementById('rg-ai-max-chars').value), 80000);
+  assert.equal(Number(f.document.getElementById('rg-ai-timeout').value), 180);
+  assert.equal(f.keys.get(endpoint), 'synthetic-legacy-key');
+  assert.equal(f.document.getElementById('rg-ai-key').value, '');
 });

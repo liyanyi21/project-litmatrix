@@ -684,3 +684,27 @@ test('failed import keeps the file, mappings, selection and preview for retry wi
     assert.equal(f.apiCalls.length + f.keyCalls.length + f.saves.length + f.batchSaves.length, 0);
   } finally { f.cleanup(); }
 });
+
+
+test('per-generation summary detail reaches the prompt while preserving the saved default and API destination checks', async () => {
+  const f = await ui();
+  try {
+    await f.run('showAI(state.rows[0])');
+    assert.equal(f.run('aiManager.summaryDetail'), 'brief');
+    await f.click(f.document.querySelector('[data-ai-detail="comprehensive"]'));
+    assert.equal(f.apiCalls.length, 0);
+    await f.run('aiManager.generate()');
+    assert.equal(f.apiCalls.length, 1, 'changing the detail must not trigger a stale API configuration error');
+    const payload = JSON.parse(f.apiCalls[0].options.body);
+    assert.ok(payload.messages[0].content.includes('全面'));
+    const user = payload.messages.at(-1).content;
+    const packet = JSON.parse(user.slice(user.indexOf('{')));
+    assert.equal(packet.summaryDetail.id, 'comprehensive');
+    assert.ok(!f.aiConfig().summaryDetail || f.aiConfig().summaryDetail === 'brief');
+    assert.equal(f.batchSaves.length, 0);
+    f.setAIConfig({ ...f.aiConfig(), model: 'changed-model' });
+    await f.run('aiManager.generate()');
+    assert.equal(f.apiCalls.length, 1, 'actual provider/model changes must still block dispatch');
+    assert.ok(f.document.querySelector('#rg-ai-error').textContent.includes('API 设置已变化'));
+  } finally { f.cleanup(); }
+});

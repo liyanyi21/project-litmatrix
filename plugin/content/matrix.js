@@ -90,13 +90,19 @@ async function showAI(row) {
     generate: async ({ config, project, fields, paper, source, signal }) => {
       const current = () => RGAI.normalizeConfig(new RGAI.ConfigStore(Z).getConfig());
       const snapshot = RGAI.normalizeConfig(config);
-      const unchanged = () => JSON.stringify(current()) === JSON.stringify(snapshot);
+      const connectionSettings = value => {
+        const { summaryDetail, ...settings } = value;
+        return JSON.stringify(settings);
+      };
+      // The dialog may override its summary length for this request. Provider,
+      // model, source and transport limits must still match the saved settings.
+      const unchanged = () => connectionSettings(current()) === connectionSettings(snapshot);
       if (!unchanged()) throw new Error("API 设置已变化，请点击“刷新 API 设置”后再生成。");
       let key;
       try { key = await Z.ProjectLitMatrix.credentials.getKey(RGAI.endpointFor(snapshot.baseURL)); }
       catch (_) { throw new Error("无法读取当前 API 地址的密钥，请到研矩设置检查密钥存储。"); }
       if (!unchanged()) throw new Error("API 设置已变化，请刷新设置后重试。");
-      const messages = RGAI.buildMessages({ project, fields, paper, source });
+      const messages = RGAI.buildMessages({ project, fields, paper, source, summaryDetail: snapshot.summaryDetail });
       const result = await RGAI.request(snapshot, key, messages, { signal, fetchImpl: (...args) => window.fetch(...args) });
       return RGAI.parseResult(result.content, fields);
     },
@@ -448,7 +454,7 @@ function showTemplateExport() {
   $("#templateInstructions").value = "请依据我提供的论文原文或 PDF，填写表格中的项目分析字段。\n"
     + "1. 保留表头、字段 ID、项目标识、文献标识、文献Key和文献链接，保持每篇论文一行，不新增或合并文献。\n"
     + "2. 第一条“填写要求”记录说明每个字段应填写什么，不是一篇论文。只填写“文献”行的分析字段。\n"
-    + "3. 根据每列的填写要求用中文简要总结。缺少依据时写“未提供／无法判断”，不要仅凭标题编造研究内容。\n"
+    + "3. 根据每列的填写要求，用中文提取原文明确报告的客观事实，保留研究条件与关键数据；不添加个人解读或泛泛评价。原文未提及的内容只写“未提及”，不要仅凭标题编造。\n"
     + "4. 保留逗号、引号和换行的正确 CSV/TSV 转义。返回完整的 UTF-8 CSV 或 TSV 文件，不要转为图片。\n"
     + "5. 不想导入的分析格子请留空。导入默认忽略空白，并保留 Zotero 中已有的内容。";
   $("#templateError").textContent = "";

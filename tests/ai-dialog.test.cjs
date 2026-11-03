@@ -288,3 +288,112 @@ test('late refresh from a closed dialog cannot update a newly opened destination
   assert.equal(f.manager.config.baseURL, 'https://current.example.test/v1');
   assert.equal(f.document.querySelector('#rg-ai-endpoint').textContent, 'https://current.example.test/v1');
 });
+
+test('summary amount defaults to brief for old configs and changes only the next explicit generation', async () => {
+  const f = fixture();
+  await f.manager.open(f.row);
+  assert.equal(f.manager.summaryDetail, 'brief');
+  const group = f.document.querySelector('[aria-labelledby="rg-ai-detail-heading"]');
+  assert.equal(group.getAttribute('role'), 'group');
+  assert.deepEqual([...group.querySelectorAll('button')].map(button => button.textContent), ['简约', '详细', '全面']);
+  assert.equal(f.document.querySelector('[data-ai-detail="brief"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(f.document.querySelector('[data-ai-detail="detailed"]').getAttribute('aria-pressed'), 'false');
+  assert.ok(f.document.querySelector('.rg-ai-summary-detail').textContent.includes('客观事实'));
+  const initialHint = f.document.querySelector('#rg-ai-detail-hint').textContent;
+  await f.click('[data-ai-detail="detailed"]');
+  assert.equal(f.manager.summaryDetail, 'detailed');
+  assert.equal(f.document.querySelector('[data-ai-detail="detailed"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(f.document.querySelector('[data-ai-detail="brief"]').getAttribute('aria-pressed'), 'false');
+  assert.notEqual(f.document.querySelector('#rg-ai-detail-hint').textContent, initialHint);
+  assert.equal(f.generated.length, 0);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.sources.length, 1, 'changing summary amount does not re-read source or call the API');
+  assert.equal(f.config.summaryDetail, undefined, 'per-generation selection does not overwrite saved API defaults');
+  await f.manager.generate();
+  assert.equal(f.generated[0].config.summaryDetail, 'detailed');
+  assert.equal(f.manager.draftInfo.summaryDetail, 'detailed');
+  assert.ok(f.document.querySelector('.rg-ai-draft-origin').textContent.endsWith('详细'));
+});
+
+test('changing summary amount preserves edited drafts, their origin and the normal regenerate confirmation', async () => {
+  const f = fixture();
+  await f.manager.open(f.row); await f.manager.generate();
+  f.setDraft('findings', '人工核对后保留的客观结论');
+  f.manager.applySelected.delete('outcomes');
+  await f.click('[data-ai-detail="comprehensive"]');
+  assert.equal(f.manager.drafts.get('findings'), '人工核对后保留的客观结论');
+  assert.equal(f.document.querySelector('[data-ai-draft="findings"]').value, '人工核对后保留的客观结论');
+  assert.equal(f.manager.applySelected.has('outcomes'), false);
+  assert.equal(f.manager.draftInfo.summaryDetail, 'brief');
+  assert.ok(f.document.querySelector('.rg-ai-draft-origin').textContent.endsWith('简约'));
+  assert.equal(f.generated.length, 1);
+  f.window.confirm = () => false;
+  await f.manager.generate();
+  assert.equal(f.generated.length, 1, 'switching amount does not bypass draft replacement confirmation');
+  f.window.confirm = () => true;
+  await f.manager.generate();
+  assert.equal(f.generated.length, 2);
+  assert.equal(f.generated[0].config.summaryDetail, 'brief', 'prior request snapshot remains unchanged');
+  assert.equal(f.generated[1].config.summaryDetail, 'comprehensive');
+  assert.equal(f.manager.draftInfo.summaryDetail, 'comprehensive');
+  assert.ok(f.document.querySelector('.rg-ai-draft-origin').textContent.endsWith('全面'));
+  assert.equal(f.writes.length, 0);
+});
+
+test('summary amount controls lock during generation and cannot alter a pending request', async () => {
+  const f = fixture(), pending = deferred();
+  await f.manager.open(f.row);
+  await f.click('[data-ai-detail="detailed"]');
+  f.generate(() => pending.promise);
+  const request = f.manager.generate(); await settle();
+  for (const button of f.document.querySelectorAll('[data-ai-detail]')) assert.equal(button.disabled, true);
+  assert.equal(f.manager.setSummaryDetail('comprehensive'), false);
+  await f.click('[data-ai-detail="brief"]');
+  assert.equal(f.manager.summaryDetail, 'detailed');
+  assert.equal(f.generated.length, 1);
+  assert.equal(f.generated[0].config.summaryDetail, 'detailed');
+  pending.resolve({ findings: '已报告结论', outcomes: '已报告指标' }); await request;
+  assert.equal(f.manager.draftInfo.summaryDetail, 'detailed');
+  for (const button of f.document.querySelectorAll('[data-ai-detail]')) assert.equal(button.disabled, false);
+  assert.equal(f.manager.setSummaryDetail('invented-mode'), false);
+  assert.equal(f.manager.summaryDetail, 'detailed');
+});
+
+test('opening and explicitly refreshing settings use the saved default without relabeling existing drafts', async () => {
+  const f = fixture();
+  f.configProvider(async () => ({ ...f.config, summaryDetail: 'comprehensive' }));
+  await f.manager.open(f.row);
+  assert.equal(f.manager.summaryDetail, 'comprehensive');
+  await f.manager.generate();
+  f.setDraft('findings', '更新设置前已核对的内容');
+  await f.click('[data-ai-detail="brief"]');
+  f.configProvider(async () => ({ ...f.config, summaryDetail: 'detailed' }));
+  await f.manager.refreshConfig();
+  assert.equal(f.manager.summaryDetail, 'detailed');
+  assert.equal(f.document.querySelector('[data-ai-detail="detailed"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(f.manager.drafts.get('findings'), '更新设置前已核对的内容');
+  assert.equal(f.manager.draftInfo.summaryDetail, 'comprehensive');
+  assert.ok(f.document.querySelector('.rg-ai-draft-origin').textContent.endsWith('全面'));
+  assert.equal(f.generated.length, 1);
+  await f.click('[data-ai-detail="brief"]');
+  f.manager.close(true);
+  await f.manager.open({ ...f.row, id: 2, title: '另一篇论文' });
+  assert.equal(f.manager.summaryDetail, 'detailed', 'new paper starts with the saved default');
+  assert.equal(f.manager.drafts.size, 0);
+});
+
+test('failed generation at a new amount keeps edited drafts and their original amount', async () => {
+  const f = fixture();
+  await f.manager.open(f.row); await f.manager.generate();
+  f.setDraft('findings', '已有草稿的人工修订');
+  await f.click('[data-ai-detail="comprehensive"]');
+  f.generate(async () => { throw new Error('本次生成超时'); });
+  await f.manager.generate();
+  assert.equal(f.manager.summaryDetail, 'comprehensive');
+  assert.equal(f.manager.drafts.get('findings'), '已有草稿的人工修订');
+  assert.equal(f.document.querySelector('[data-ai-draft="findings"]').value, '已有草稿的人工修订');
+  assert.equal(f.manager.draftInfo.summaryDetail, 'brief');
+  assert.ok(f.document.querySelector('.rg-ai-draft-origin').textContent.endsWith('简约'));
+  assert.ok(f.document.querySelector('#rg-ai-error').textContent.includes('本次生成超时'));
+  assert.equal(f.writes.length, 0);
+});

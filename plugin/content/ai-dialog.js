@@ -1,9 +1,11 @@
 /* ResearchGrid single-paper AI drafts. AGPL-3.0-or-later. */
 (function (root) {
   "use strict";
+  const AI = root.RGAI || (typeof require === "function" ? require("./ai.js") : null);
   const clone = value => JSON.parse(JSON.stringify(value));
   const signature = fields => JSON.stringify(fields.filter(f => !f.archived)
     .map(f => [f.id, f.label, f.requirement || ""]));
+  const detailOption = id => AI.SUMMARY_DETAILS.find(option => option.id === id) || AI.SUMMARY_DETAILS[0];
 
   class Manager {
     constructor(options) {
@@ -65,7 +67,7 @@
       this.selected = new Set(this.fields.filter(field => !this.expected[field.id].trim()).map(field => field.id));
       this.drafts = new Map(); this.applySelected = new Set(); this.draftInfo = null;
       this.error = ""; this.status = ""; this.configError = "";
-      this.source = null; this.config = null; this.mode = "indexed";
+      this.source = null; this.config = null; this.mode = "indexed"; this.summaryDetail = "brief";
       this.loading = this.busy = true; this.saving = this.generating = false;
       const generation = ++this.generation;
       this.render(); this.dialog.showModal();
@@ -74,6 +76,7 @@
       catch (error) { configError = error.message || "请先在研矩设置中配置 API。"; }
       if (!this.isOpen() || generation !== this.generation) return;
       this.config = config; this.configError = configError;
+      this.summaryDetail = detailOption(config?.summaryDetail).id;
       await this.loadSource(this.mode);
     }
     async refreshConfig() {
@@ -86,6 +89,7 @@
       catch (error) { configError = error.message || "请先在研矩设置中配置 API。"; }
       if (!this.isOpen() || token !== this.generation) return false;
       this.config = config; this.configError = configError;
+      this.summaryDetail = detailOption(config?.summaryDetail).id;
       await this.loadSource(this.mode);
       return !!this.config?.baseURL && !!this.config?.model;
     }
@@ -125,6 +129,13 @@
       }
     }
     selectedFields() { return this.fields.filter(field => this.selected.has(field.id)); }
+    setSummaryDetail(id) {
+      if (this.busy || !AI.SUMMARY_DETAILS.some(option => option.id === id)) return false;
+      this.summaryDetail = id;
+      this.render();
+      this.dialog.querySelector(`[data-ai-detail="${id}"]`)?.focus();
+      return true;
+    }
     canGenerate() {
       return !this.busy && !!this.config?.baseURL && !!this.config?.model && !!this.source?.text?.trim() && this.selected.size > 0;
     }
@@ -174,12 +185,21 @@
             onchange: event => { if (event.target.checked) this.selected.add(field.id); else this.selected.delete(field.id); this.syncControls(); } }),
           E("span", {}, field.label, this.expected[field.id].trim() ? E("span", { class: "rg-ai-existing" }, " 已填写") : null,
             field.requirement ? E("small", {}, field.requirement) : null))));
+      const detail = detailOption(this.summaryDetail);
+      const summaryDetail = E("section", { class: "rg-ai-summary-detail" },
+        E("h3", { id: "rg-ai-detail-heading" }, "每字段总结篇幅"),
+        E("div", { class: "rg-ai-detail-buttons", role: "group", "aria-labelledby": "rg-ai-detail-heading", "aria-describedby": "rg-ai-detail-hint" },
+          ...AI.SUMMARY_DETAILS.map(option => E("button", { type: "button", class: "rg-ai-input rg-ai-detail-button",
+            "data-ai-detail": option.id, "aria-pressed": String(option.id === detail.id), title: option.hint,
+            onclick: () => this.setSummaryDetail(option.id) }, option.label))),
+        E("p", { id: "rg-ai-detail-hint", class: "rg-ai-hint", "aria-live": "polite" }, detail.hint),
+        E("p", { class: "rg-ai-hint" }, "只整理论文明确报告的客观事实，保留原文条件和数值；未提及的内容不作推断。切换篇幅只影响下一次生成，已有草稿保留。"));
       this.generateButton = E("button", { type: "button", id: "rg-ai-generate", class: "primary", onclick: this.safe(() => this.generate()) }, "发送到 API 并生成草稿");
       this.cancelButton = E("button", { type: "button", id: "rg-ai-cancel-request", onclick: () => this.cancelRequest() }, "取消生成");
       const drafts = this.drafts.size ? E("section", { class: "rg-ai-drafts" },
         E("h3", {}, "AI 草稿 · 请核对原文后写入"),
-        this.draftInfo ? E("p", { class: "rg-ai-hint rg-ai-draft-origin" }, `草稿来源：${this.draftInfo.baseURL} · ${this.draftInfo.model} · ${this.draftInfo.sourceLabel}`) : null,
-        E("p", { class: "rg-ai-warning" }, "以下是 AI 生成的初步整理，可能遗漏或误读。可修改内容、取消勾选，再写入当前项目笔记。"),
+        this.draftInfo ? E("p", { class: "rg-ai-hint rg-ai-draft-origin" }, `草稿来源：${this.draftInfo.baseURL} · ${this.draftInfo.model} · ${this.draftInfo.sourceLabel} · ${detailOption(this.draftInfo.summaryDetail).label}`) : null,
+        E("p", { class: "rg-ai-warning" }, "以下是 AI 提取的事实草稿，请核对原文。可修改内容、取消勾选，再写入当前项目笔记。"),
         ...this.fields.filter(field => this.drafts.has(field.id)).map(field => {
           const value = this.drafts.get(field.id);
           const textarea = E("textarea", { rows: "4", class: "rg-ai-input rg-ai-draft", "data-ai-draft": field.id,
@@ -200,7 +220,7 @@
       this.dialog.replaceChildren(...[
         E("div", { class: "rg-ai-heading" }, E("h2", { id: "rg-ai-title" }, "AI 总结项目字段"), this.closeButton),
         E("p", { class: "rg-ai-project" }, this.project.name), E("p", { class: "rg-ai-paper" }, this.row.title),
-        destination, sourceSection, fieldChoices,
+        destination, sourceSection, fieldChoices, summaryDetail,
         E("div", { class: "rg-ai-actions" }, this.generateButton, this.cancelButton),
         E("p", { id: "rg-ai-status", class: "rg-ai-status", role: "status", "aria-live": "polite" }, this.status || ""),
         drafts, !this.row.editable ? E("p", { class: "rg-ai-warning" }, "此文献当前只读，可预览 AI 草稿，但不能写入项目笔记。") : null,
@@ -218,7 +238,7 @@
         if (!fields.length) throw new Error("请至少选择一个需要总结的字段。");
         if (!this.source?.text?.trim()) throw new Error("没有可发送的论文文本，请检查摘要或原文是否可读取。");
         if (this.dirty() && !this.document.defaultView.confirm("重新生成会替换当前未写入的 AI 草稿，是否继续？")) return;
-        const config = clone(this.config), source = clone(this.source), project = { ...this.project, fields: clone(this.fields) };
+        const config = clone({ ...this.config, summaryDetail: this.summaryDetail }), source = clone(this.source), project = { ...this.project, fields: clone(this.fields) };
         const Controller = root.AbortController || this.document.defaultView.AbortController;
         const controller = this.controller = new Controller();
         const token = ++this.generation;
@@ -238,7 +258,7 @@
           }
           if (![...next.values()].some(value => value.trim())) throw new Error("模型没有返回可用的字段内容；请检查接口和论文文本后重试。");
           this.drafts = next;
-          this.draftInfo = { baseURL: config.baseURL, model: config.model, sourceLabel: source.label || "论文文本" };
+          this.draftInfo = { baseURL: config.baseURL, model: config.model, sourceLabel: source.label || "论文文本", summaryDetail: config.summaryDetail };
           this.applySelected = new Set([...next].filter(([, value]) => value.trim()).map(([id]) => id));
           this.status = "草稿已生成，尚未写入。请核对并选择要写入的字段。";
         } catch (error) {
