@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <title>研矩 · ResearchGrid</title>
-  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css"><link rel="stylesheet" href="ai-dialog.css">
+  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css"><link rel="stylesheet" href="ai-dialog.css"><link rel="stylesheet" href="table-dialog.css">
 </head>
 <body>
   <header>
-    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.3.0</span></div>
+    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.4.0</span></div>
     <div class="toolbar">
       <label class="project-label">研究项目<select id="project" aria-label="研究项目"><option value="">请选择 Zotero 分类</option></select></label>
       <button id="current">使用当前分类</button>
       <label class="check"><input id="recursive" type="checkbox" checked>包含子分类</label>
       <span class="spacer"></span>
-      <button id="columns">项目字段与模板</button><button id="refresh">刷新</button><button id="export" class="primary" disabled>导出 CSV</button>
+      <button id="columns">项目字段与模板</button><button id="refresh">刷新</button><button id="export" disabled>导出已填 CSV</button><button id="exportTemplate" disabled>导出待填模板</button><button id="importTable" class="primary" disabled>导入表格</button>
     </div>
     <div class="searchbar"><input id="search" type="search" placeholder="搜索文献、分析和批注，可组合多个关键词…" aria-label="搜索文献矩阵">
       <select id="analysisState" aria-label="分析状态"><option value="all">全部文献</option><option value="filled">已填写分析</option><option value="empty">尚未填写</option></select>
@@ -32,7 +32,17 @@
     </form>
   </dialog>
   <dialog id="annotationsDialog"><div class="dialog-title"><h2>原文批注</h2><button id="annotationsClose" class="icon" aria-label="关闭原文批注">×</button></div><p id="annotationTitle" class="hint"></p><div id="annotationsList"></div></dialog>
+  <dialog id="templateDialog" aria-labelledby="templateHeading">
+    <div class="dialog-title"><h2 id="templateHeading">导出待填写表格</h2><button id="templateClose" class="icon" aria-label="关闭模板导出">×</button></div>
+    <p id="templateContext" class="hint"></p>
+    <p>模板包含文献标识、当前项目全部字段和填写要求，不带已有分析或备注。模板不含论文全文，交给其他 AI 时请同时提供 PDF 或原文。</p>
+    <label>文件格式 <select id="templateFormat" aria-label="待填模板格式"><option value="csv">CSV（逗号分隔，UTF-8）</option><option value="tsv">TSV（制表符分隔，UTF-8）</option></select></label>
+    <p class="hint">可复制下面的填写说明，连同表格一起交给 AI：</p>
+    <textarea id="templateInstructions" rows="7" readonly="readonly" aria-label="给外部 AI 的填写说明"></textarea>
+    <p id="templateError" class="error" role="alert"></p>
+    <div class="dialog-actions"><span class="spacer"></span><button id="templateCancel">取消</button><button id="templateSave" class="primary">保存待填模板</button></div>
+  </dialog>
   <div id="toast" role="status" hidden></div>
-  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="ai.js"></script><script src="ai-dialog.js"></script><script src="matrix.js"></script>
+  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="ai.js"></script><script src="ai-dialog.js"></script><script src="table-io.js"></script><script src="table-dialog.js"></script><script src="matrix.js"></script>
 </body>
 </html>

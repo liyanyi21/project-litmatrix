@@ -76,3 +76,6 @@ dialog::backdrop { background:#152b224d; }
 .field-guidance { padding:10px 12px; background:var(--soft); border-radius:6px; white-space:pre-wrap; font-size:12px; }
 #editDialog { width:min(780px,86vw); max-height:82vh; }
 #editValue { min-height:160px; height:32vh; max-height:48vh; }
+
+#templateInstructions { display:block; width:100%; margin-top:10px; padding:10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); line-height:1.7; resize:vertical; }
+.toolbar { flex-wrap:wrap; }

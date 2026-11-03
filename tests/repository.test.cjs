@@ -372,3 +372,312 @@ test('source truncation preserves both ends within the exact maxChars cap and re
     assertNoPrivateNotes(result);
   }
 });
+
+function importFixture() {
+  const f = fixture();
+  const second = new f.Item();
+  second.title = '第二篇文献';
+  f.items.set(second.id, second);
+  const originalChildren = f.a.getChildItems;
+  f.a.getChildItems = () => [...originalChildren(), second.id];
+  const secondRow = { id: second.id, key: second.key, libraryID: 1, editable: true };
+  return { ...f, second, secondRow };
+}
+
+function importOperation(row, changes = { remarks: '表格里的备注' }, expected = { remarks: '' }) {
+  return { row, changes, expected };
+}
+
+test('table import saves all selected papers in one transaction with one note save per changed paper', async () => {
+  const f = importFixture();
+  let transactions = 0, noteSaves = 0;
+  f.Z.DB.executeTransaction = async callback => { transactions++; return callback(); };
+  const save = f.Item.prototype.save;
+  f.Item.prototype.save = async function () { if (this.type === 'note') noteSaves++; return save.call(this); };
+  const result = await f.repo.importRows(f.projectA, [
+    importOperation(f.row, { findings: '第一篇结论', remarks: '第一篇备注' }, { findings: '', remarks: '' }),
+    importOperation(f.secondRow, { findings: '第二篇结论' }, { findings: '' }),
+  ]);
+  assert.equal(transactions, 1);
+  assert.equal(noteSaves, 2);
+  assert.equal(result.importedRows, 2);
+  assert.equal(result.changedFields, 3);
+  assert.equal(result.records.length, 2);
+  assert.equal(result.records[0].row, f.row);
+  assert.equal(result.records[1].row, f.secondRow);
+  assert.equal(result.records[0].values.findings, '第一篇结论');
+  assert.equal(result.records[1].values.findings, '第二篇结论');
+  assert.equal(result.records[0].note.parentID, f.parent.id);
+  assert.equal(result.records[1].note.parentID, f.second.id);
+  for (const { note } of result.records) assert.ok(note.getTags().some(t => t.tag === C.noteTag(f.projectA.id)));
+  assert.deepEqual(f.row, { id: f.parent.id, key: f.parent.key, libraryID: 1, editable: true }, 'repository must not update caller table state before the UI accepts the result');
+});
+
+test('a stale field in a later paper rejects the entire import before changing any earlier note', async () => {
+  const f = importFixture();
+  await f.repo.saveFields(f.projectA, f.row, { findings: '首篇原结论', remarks: '首篇原备注' }, { findings: '', remarks: '' });
+  await f.repo.saveField(f.projectA, f.secondRow, 'findings', '第二篇其他窗口的新结论', '');
+  const first = await f.repo.noteFor(f.parent, f.projectA);
+  const second = await f.repo.noteFor(f.second, f.projectA);
+  const originalHTML = [first.note.getNote(), second.note.getNote()];
+  let writes = 0;
+  for (const { note } of [first, second]) {
+    const setNote = note.setNote.bind(note);
+    note.setNote = html => { writes++; setNote(html); };
+  }
+  await assert.rejects(f.repo.importRows(f.projectA, [
+    importOperation(f.row, { remarks: '不应写入的首篇备注' }, { remarks: '首篇原备注' }),
+    importOperation(f.secondRow, { findings: '表格过期结论' }, { findings: '' }),
+  ]), /没有导入/);
+  assert.equal(writes, 0);
+  assert.deepEqual([first.note.getNote(), second.note.getNote()], originalHTML);
+});
+
+test('later paper validation failures leave an earlier new project note uncreated', async () => {
+  for (const failure of ['deleted', 'identity', 'foreign-library', 'not-editable', 'standalone-attachment', 'child-item']) {
+    const f = importFixture();
+    if (failure === 'deleted') f.second.deleted = true;
+    if (failure === 'identity') f.second.key = 'REPLACEDKEY';
+    if (failure === 'foreign-library') f.second.libraryID = 99;
+    if (failure === 'not-editable') f.second.isEditable = () => false;
+    if (failure === 'standalone-attachment') f.second.type = 'attachment';
+    if (failure === 'child-item') f.second.parentID = f.parent.id;
+    await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row), importOperation(f.secondRow)]), /变化|不可编辑/);
+    assert.equal(f.parent.notes.length, 0, failure);
+    assert.equal([...f.items.values()].filter(item => item.type === 'note').length, 0, failure);
+  }
+});
+
+test('import rejects read-only rows and libraries before beginning a write transaction', async () => {
+  const f = importFixture();
+  let transactions = 0;
+  f.Z.DB.executeTransaction = async callback => { transactions++; return callback(); };
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation({ ...f.row, editable: false })]), /不可编辑/);
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation({ ...f.row, libraryID: 99 })]), /文献库/);
+  f.library.editable = false;
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row)]), /不能编辑/);
+  assert.equal(transactions, 0);
+  assert.equal(f.parent.notes.length, 0);
+});
+
+test('a library becoming read-only while the import waits is checked again inside its transaction', async () => {
+  const f = importFixture();
+  f.Z.DB.executeTransaction = async callback => { f.library.editable = false; return callback(); };
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row)]), /不能编辑/);
+  assert.equal(f.parent.notes.length, 0);
+});
+
+test('duplicate paper IDs or keys cannot produce multiple writes from separate table rows', async () => {
+  const f = importFixture();
+  let transactions = 0;
+  f.Z.DB.executeTransaction = async callback => { transactions++; return callback(); };
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row), importOperation({ ...f.row })]), /出现多次/);
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row), importOperation({ ...f.secondRow, key: f.row.key })]), /出现多次/);
+  assert.equal(transactions, 0);
+  assert.equal(f.parent.notes.length, 0);
+});
+
+test('archived, unknown and malformed table fields are rejected before any transaction', async () => {
+  const f = importFixture();
+  f.projectA.fields = C.FIELDS.map(field => ({ ...field, archived: field.id === 'findings' }));
+  let transactions = 0;
+  f.Z.DB.executeTransaction = async callback => { transactions++; return callback(); };
+  for (const operation of [
+    importOperation(f.row, { findings: '已移出字段' }, { findings: '' }),
+    importOperation(f.row, { unknown: '未知字段' }, { unknown: '' }),
+    importOperation(f.row, { remarks: '缺少原值' }, {}),
+    importOperation(f.row, { remarks: 123 }, { remarks: '' }),
+    importOperation(f.row, {}, {}),
+    { row: f.row, changes: [], expected: {} },
+    { row: f.row, changes: { remarks: 'x' }, expected: null },
+  ]) await assert.rejects(f.repo.importRows(f.projectA, [operation]), /字段|原值/);
+  await assert.rejects(f.repo.importRows(f.projectA, []), /选择/);
+  assert.equal(transactions, 0);
+  assert.equal(f.parent.notes.length, 0);
+});
+
+test('table import bounds large inputs before requesting a transaction', async () => {
+  const f = importFixture();
+  let transactions = 0;
+  f.Z.DB.executeTransaction = async callback => { transactions++; return callback(); };
+  await assert.rejects(f.repo.importRows(f.projectA, Array.from({ length: 10001 }, () => importOperation(f.row))), /10000/);
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row, { remarks: 'x'.repeat(200001) }, { remarks: '' })]), /200000/);
+  const text = 'x'.repeat(200000);
+  const oversized = Array.from({ length: 26 }, (_, index) => importOperation(
+    { id: index + 100, key: `PAPER${index}`, libraryID: 1, editable: true },
+    { findings: text, remarks: text }, { findings: '', remarks: '' }));
+  await assert.rejects(f.repo.importRows(f.projectA, oversized), /内容过长/);
+  assert.equal(transactions, 0);
+});
+
+test('import snapshots values, field definitions and paper identity before transaction waits', async () => {
+  const f = importFixture();
+  const fields = [{ id: 'custom_import', label: '导入字段', visible: true, aliases: [] }];
+  f.projectA.fields = fields;
+  const changes = { custom_import: '确认时的表格文本' }, expected = { custom_import: '' };
+  const originalKey = f.row.key;
+  f.Z.DB.executeTransaction = async callback => {
+    changes.custom_import = '调用者稍后修改的文本';
+    expected.custom_import = '修改过的原值';
+    fields[0].label = '等待时改名'; fields[0].archived = true;
+    f.row.key = 'CHANGEDCALLERKEY';
+    return callback();
+  };
+  const result = await f.repo.importRows(f.projectA, [importOperation(f.row, changes, expected)]);
+  assert.equal(result.records[0].values.custom_import, '确认时的表格文本');
+  assert.equal(f.parent.key, originalKey);
+  assert.match(result.records[0].note.getNote(), /导入字段/);
+  assert.ok(!result.records[0].note.getNote().includes('等待时改名'));
+});
+
+test('mutating expected values during an import wait cannot authorize overwriting newer text', async () => {
+  const f = importFixture();
+  await f.repo.saveField(f.projectA, f.row, 'remarks', '其他窗口的新内容', '');
+  const expected = { remarks: '过期原值' };
+  f.Z.DB.executeTransaction = async callback => { expected.remarks = '其他窗口的新内容'; return callback(); };
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row, { remarks: '不应覆盖' }, expected)]), /没有导入/);
+  assert.equal((await f.repo.noteFor(f.parent, f.projectA)).values.remarks, '其他窗口的新内容');
+});
+
+test('no-op table rows do not create empty notes, while explicit blank updates can clear a selected value', async () => {
+  const f = importFixture();
+  const empty = await f.repo.importRows(f.projectA, [importOperation(f.row, { remarks: '' }, { remarks: '' })]);
+  assert.equal(empty.records.length, 1);
+  assert.equal(empty.records[0].note, null);
+  assert.equal(empty.importedRows, 0);
+  assert.equal(empty.changedFields, 0);
+  assert.equal(f.parent.notes.length, 0);
+  await f.repo.saveField(f.projectA, f.row, 'remarks', '明确选择清空的旧值', '');
+  const cleared = await f.repo.importRows(f.projectA, [importOperation(f.row, { remarks: '' }, { remarks: '明确选择清空的旧值' })]);
+  assert.equal(cleared.importedRows, 1);
+  assert.equal(cleared.changedFields, 1);
+  assert.equal(cleared.records[0].values.remarks, '');
+  assert.equal(f.parent.notes.length, 1);
+});
+
+test('import retains unselected and archived sections and never modifies another project note', async () => {
+  const f = importFixture();
+  const current = { id: 'custom_current', label: '当前字段', visible: true };
+  const archived = { id: 'custom_history', label: '历史字段', visible: true };
+  f.projectA.fields = [current, archived];
+  await f.repo.saveFields(f.projectA, f.row, { custom_current: '旧值', custom_history: '归档内容' }, { custom_current: '', custom_history: '' });
+  await f.repo.saveField(f.projectB, f.row, 'remarks', '另一个项目的个人备注', '');
+  const a = await f.repo.noteFor(f.parent, f.projectA);
+  const b = await f.repo.noteFor(f.parent, f.projectB);
+  a.note.setNote(a.note.getNote().replace('</div>', '<h2>未知富文本分区</h2><p><strong>不能删除</strong></p></div>'));
+  const otherProjectHTML = b.note.getNote();
+  f.projectA.fields = [current, { ...archived, archived: true }];
+  const result = await f.repo.importRows(f.projectA, [importOperation(f.row, { custom_current: '<script>纯文本</script>\n新行' }, { custom_current: '旧值' })]);
+  assert.equal(result.records[0].values.custom_current, '<script>纯文本</script>\n新行');
+  assert.equal(result.records[0].values.custom_history, '归档内容');
+  assert.match(result.records[0].note.getNote(), /<strong>不能删除<\/strong>/);
+  assert.ok(!result.records[0].note.getNote().includes('<script>'));
+  assert.equal(b.note.getNote(), otherProjectHTML);
+  assert.equal(f.parent.notes.length, 2);
+});
+
+test('a later ambiguous project note prevents creation of an earlier paper import note', async () => {
+  const f = importFixture();
+  for (let index = 0; index < 2; index++) {
+    const note = new f.Item('note'); note.parentID = f.second.id;
+    note.addTag(C.noteTag(f.projectA.id)); note.setNote(C.createNote(f.projectA.name)); await note.save();
+  }
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row), importOperation(f.secondRow)]), /多份/);
+  assert.equal(f.parent.notes.length, 0);
+  assert.equal(f.second.notes.length, 2);
+});
+
+// Keep the database separate from cached Item objects, as SQLite rollback does
+// not itself restore the objects changed by an earlier successful Item.save().
+function installRollbackDatabase(f, failParentID) {
+  let database = new Map([...f.items].map(([id, item]) => [id, { html: item.html, notes: [...item.notes] }]));
+  const reloads = [], cleared = [];
+  let fail = true;
+  const save = f.Item.prototype.save;
+  f.Item.prototype.save = async function () {
+    if (fail && this.type === 'note' && this.parentID === failParentID) {
+      fail = false;
+      throw new Error('simulated later SQLite write failure');
+    }
+    const result = await save.call(this);
+    database.set(this.id, { html: this.html, notes: [...this.notes] });
+    if (this.parentID) database.get(this.parentID).notes = [...f.items.get(this.parentID).notes];
+    return result;
+  };
+  f.Item.prototype.reload = async function (types, force) {
+    reloads.push({ id: this.id, types, force });
+    const stored = database.get(this.id);
+    if (!stored) throw new Error('cannot reload rolled-back new note');
+    this.html = stored.html;
+    this.notes = [...stored.notes];
+  };
+  f.Item.prototype._clearChanged = function () { cleared.push(this.id); };
+  f.Z.DB.executeTransaction = async callback => {
+    const previous = new Map([...database].map(([id, data]) => [id, { html: data.html, notes: [...data.notes] }]));
+    try { return await callback(); }
+    catch (error) {
+      database = previous;
+      // Zotero's standard rollback callback unloads newly registered Items.
+      for (const id of f.items.keys()) if (!database.has(id)) f.items.delete(id);
+      throw error;
+    }
+  };
+  return { reloads, cleared, database: () => database };
+}
+
+test('later save failure rolls back existing note caches as well as SQLite, allowing a clean retry', async () => {
+  const f = importFixture();
+  await f.repo.saveField(f.projectA, f.row, 'remarks', '第一篇原值', '');
+  await f.repo.saveField(f.projectA, f.secondRow, 'remarks', '第二篇原值', '');
+  const first = await f.repo.noteFor(f.parent, f.projectA);
+  const second = await f.repo.noteFor(f.second, f.projectA);
+  const html = [first.note.getNote(), second.note.getNote()];
+  const db = installRollbackDatabase(f, f.second.id);
+  const operations = [
+    importOperation(f.row, { remarks: '第一篇导入值' }, { remarks: '第一篇原值' }),
+    importOperation(f.secondRow, { remarks: '第二篇导入值' }, { remarks: '第二篇原值' }),
+  ];
+  await assert.rejects(f.repo.importRows(f.projectA, operations), /later SQLite write failure/);
+  assert.deepEqual([first.note.getNote(), second.note.getNote()], html, 'cached notes must not retain rolled-back text');
+  assert.deepEqual([db.database().get(first.note.id).html, db.database().get(second.note.id).html], html);
+  assert.deepEqual(new Set(db.cleared), new Set([first.note.id, second.note.id]));
+  assert.ok(db.reloads.every(reload => reload.force === true));
+  assert.deepEqual(new Set(db.reloads.filter(reload => Array.isArray(reload.types)).map(reload => reload.id)), new Set([f.parent.id, f.second.id]));
+  const retry = await f.repo.importRows(f.projectA, operations);
+  assert.equal(retry.importedRows, 2);
+  assert.equal((await f.repo.noteFor(f.parent, f.projectA)).values.remarks, '第一篇导入值');
+});
+
+test('rollback clears a newly saved note from the parent childItems cache when a later save fails', async () => {
+  const f = importFixture();
+  await f.repo.saveField(f.projectA, f.secondRow, 'remarks', '第二篇原值', '');
+  const second = await f.repo.noteFor(f.second, f.projectA);
+  const html = second.note.getNote();
+  installRollbackDatabase(f, f.second.id);
+  await assert.rejects(f.repo.importRows(f.projectA, [
+    importOperation(f.row),
+    importOperation(f.secondRow, { remarks: '第二篇导入值' }, { remarks: '第二篇原值' }),
+  ]), /later SQLite write failure/);
+  assert.deepEqual(f.parent.notes, [], 'parent must not keep a rolled-back new child ID');
+  assert.equal((await f.repo.noteFor(f.parent, f.projectA)).note, null);
+  assert.equal(second.note.getNote(), html);
+});
+
+test('import rechecks current project membership after the preview and before changing any note', async () => {
+  const f = importFixture();
+  f.a.getChildItems = () => [f.parent.id]; // Second paper was removed while preview stayed open.
+  await assert.rejects(f.repo.importRows({ ...f.projectA, recursive: false }, [importOperation(f.row), importOperation(f.secondRow)]), /文献范围已变化/);
+  assert.equal(f.parent.notes.length, 0);
+  assert.equal(f.second.notes.length, 0);
+});
+
+test('import honors recursive membership and refuses deleted or replaced project collections', async () => {
+  const f = importFixture();
+  f.a.getChildItems = () => [];
+  const sub = { id: 3, key: 'PROJECTC', libraryID: 1, getChildItems: () => [f.parent.id] };
+  f.Z.Collections.getByParent = () => [sub];
+  await assert.rejects(f.repo.importRows({ ...f.projectA, recursive: false }, [importOperation(f.row)]), /文献范围已变化/);
+  assert.equal((await f.repo.importRows({ ...f.projectA, recursive: true }, [importOperation(f.row)])).importedRows, 1);
+  f.Z.Collections.getByLibrary = () => [{ ...f.a, key: 'REPLACED' }];
+  await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row)]), /项目分类已变化/);
+});

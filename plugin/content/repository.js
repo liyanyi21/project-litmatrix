@@ -175,6 +175,149 @@
       });
       return saved;
     }
+    async importRows(project, operations) {
+      if (!project || typeof project.id !== "string" || !project.id || !Number.isInteger(project.libraryID)) {
+        throw new Error("当前项目无效，请重新选择分类。");
+      }
+      if (!Array.isArray(operations) || !operations.length) throw new Error("请先选择需要导入的内容。");
+      if (operations.length > 10000) throw new Error("一次最多导入 10000 篇文献，请分批导入。");
+      const fields = (project.fields || this.C.FIELDS).map(f => ({ ...f, aliases: [...(f.aliases || [])] }));
+      project = { ...project, fields };
+      const collectionID = project.collection?.id;
+      const seenIDs = new Set(), seenKeys = new Set();
+      let totalChars = 0;
+      // Capture all caller-controlled data before the first await. Keep only the
+      // original row reference in the result so the UI can refresh after commit.
+      const snapshots = operations.map(operation => {
+        const row = operation?.row;
+        if (!row || !Number.isInteger(row.id) || row.id <= 0 || typeof row.key !== "string" || !row.key
+          || row.libraryID !== project.libraryID || !row.editable) {
+          throw new Error("导入包含不可编辑或不属于当前文献库的文献。");
+        }
+        const identity = { id: row.id, key: row.key, libraryID: row.libraryID };
+        const key = `${identity.libraryID}:${identity.key}`;
+        if (seenIDs.has(identity.id) || seenKeys.has(key)) throw new Error("同一文献在导入中出现多次，请先合并重复行。");
+        seenIDs.add(identity.id); seenKeys.add(key);
+        if (!operation.changes || typeof operation.changes !== "object" || Array.isArray(operation.changes)
+          || !operation.expected || typeof operation.expected !== "object" || Array.isArray(operation.expected)) {
+          throw new Error("导入字段或原值格式不正确，请重新解析表格。");
+        }
+        const entries = Object.entries(operation.changes);
+        if (!entries.length || entries.length > 40) throw new Error("每篇文献请选择 1–40 个需要导入的字段。");
+        const originals = Object.create(null);
+        for (const [id, value] of entries) {
+          const field = this.C.fieldByID(id, fields);
+          if (!field || field.archived) throw new Error("导入包含未知或已移出的分析字段。");
+          if (typeof value !== "string" || !Object.prototype.hasOwnProperty.call(operation.expected, id)
+            || typeof operation.expected[id] !== "string") throw new Error("导入字段内容或原值格式不正确。");
+          if (value.length > 200000) throw new Error("单个导入字段不能超过 200000 个字符，请拆分内容。");
+          totalChars += value.length;
+          if (totalChars > 10000000) throw new Error("导入内容过长，请分批导入。");
+          originals[id] = operation.expected[id];
+        }
+        return { row, identity, entries, originals };
+      });
+      if (!this.Z.Libraries.get(project.libraryID)?.editable) throw new Error("当前文献库不能编辑项目笔记。");
+      const records = [];
+      const touched = [];
+      let importedRows = 0, changedFields = 0;
+      await this.Z.DB.executeTransaction(async () => {
+        if (!this.Z.Libraries.get(project.libraryID)?.editable) throw new Error("当前文献库不能编辑项目笔记。");
+        const collection = this.Z.Collections.getByLibrary(project.libraryID, true)
+          .find(candidate => candidate.id === collectionID && candidate.key === project.collectionKey
+            && candidate.libraryID === project.libraryID && !candidate.deleted);
+        if (!collection || this.C.projectID(this.Z.Libraries.get(project.libraryID), collection.key) !== project.id) {
+          throw new Error("当前项目分类已变化或不存在，请关闭预览并重新选择分类。");
+        }
+        const allowed = new Set((await this.itemsFor({ ...project, collection }, project.recursive !== false)).map(paper => paper.id));
+        if (snapshots.some(snapshot => !allowed.has(snapshot.identity.id))) {
+          throw new Error("当前项目文献范围已变化，部分文献已不在此分类中；本次没有导入，请关闭预览并刷新后核对。");
+        }
+        const staged = [];
+        for (const snapshot of snapshots) {
+          const { identity, entries, originals } = snapshot;
+          const paper = await this.Z.Items.getAsync(identity.id);
+          if (!paper || paper.deleted || paper.key !== identity.key || paper.libraryID !== identity.libraryID) {
+            throw new Error("导入文献已删除或发生变化，请关闭预览并刷新后重试。");
+          }
+          if (!paper.isRegularItem() || paper.parentID || (paper.isEditable && !paper.isEditable())) {
+            throw new Error("导入包含当前不可编辑的文献，请重新核对。");
+          }
+          const fresh = await this.noteFor(paper, project);
+          if (fresh.note?.isEditable && !fresh.note.isEditable()) throw new Error("导入包含不可编辑的项目笔记。");
+          if (entries.some(([id]) => fresh.values[id] !== originals[id])) {
+            throw new Error("部分字段已在其他窗口或设备中修改，本次没有导入。请保留表格，关闭预览并刷新后核对。");
+          }
+          const changed = entries.filter(([id, value]) => value.trim() !== originals[id].trim());
+          let html = null;
+          if (changed.length) {
+            if (fresh.note) {
+              html = fresh.note.getNote();
+              for (const [id, value] of changed) html = this.C.updateNote(html, id, value, this.Parser, fields);
+            } else html = this.C.createNote(project.name, Object.fromEntries(changed), fields);
+            // Validate every resulting note before any Item object is changed.
+            this.C.parseNote(html, this.Parser, fields);
+          }
+          staged.push({ ...snapshot, paper, fresh, changed, html });
+        }
+        // Zotero's transaction rolls back all writes if any subsequent save
+        // fails. Do not call saveFields() here: every paper belongs to this one
+        // shared transaction and all conflicts have already been checked.
+        for (const stage of staged) {
+          let { note, values } = stage.fresh;
+          if (stage.changed.length) {
+            const existing = !!note;
+            if (!note) {
+              note = new this.Z.Item("note");
+              note.libraryID = project.libraryID;
+              note.parentID = stage.paper.id;
+              note.addTag(this.C.noteTag(project.id));
+            }
+            touched.push({ note, paper: stage.paper, existing });
+            note.setNote(stage.html);
+            await note.save();
+            values = this.C.parseNote(note.getNote(), this.Parser, fields).values;
+            importedRows++;
+            changedFields += stage.changed.length;
+          }
+          records.push({ row: stage.row, note, values });
+        }
+      }).catch(async error => {
+        // A rejected transaction has already rolled back SQLite, but Zotero's
+        // cached existing Item objects can still contain a preceding save's
+        // imported text. Use the same forced reload as Zotero's save-error
+        // recovery, including the parent childItems cache refreshed by save().
+        // New Items are unloaded by Zotero's own rollback callback.
+        if (!error.committed) {
+          const reload = async (item, types) => {
+            if (typeof item.reload === "function") await item.reload(types, true);
+            else if (typeof this.Z.Items.reload === "function") await this.Z.Items.reload([item.id], types, true);
+            else this.Z.Items.unload?.(item.id);
+          };
+          for (const { note, existing } of touched) {
+            if (!existing) continue;
+            try {
+              await reload(note, null);
+              note._clearChanged?.();
+            } catch (recoveryError) {
+              this.Z.logError?.(recoveryError);
+              this.Z.Items.unload?.(note.id);
+            }
+          }
+          for (const paper of new Set(touched.map(record => record.paper))) {
+            try {
+              await reload(paper, ["primaryData", "childItems"]);
+              paper.clearBestAttachmentState?.();
+            } catch (recoveryError) {
+              this.Z.logError?.(recoveryError);
+              this.Z.Items.unload?.(paper.id);
+            }
+          }
+        }
+        throw error;
+      });
+      return { records, importedRows, changedFields };
+    }
     async paperSource(row, { mode = "indexed", maxChars = 60000, signal } = {}) {
       const checkCancelled = () => { if (signal?.aborted) throw new Error("已取消读取论文。"); };
       checkCancelled();

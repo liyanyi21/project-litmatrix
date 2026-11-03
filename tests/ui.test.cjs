@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { parseHTML } = require('linkedom');
 const C = require('../plugin/content/core.js');
+const Table = require('../plugin/content/table-io.js');
 
 const PROJECT_A = 'user:collection:PROJECTA';
 const PROJECT_B = 'user:collection:PROJECTB';
@@ -34,10 +35,29 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
     name: '测试项目 ' + suffix, label: '文献库 / 测试项目 ' + suffix, library: { editable: true },
   }));
   const paper = { isAttachment: () => false };
-  const row = { id: 1, key: 'PAPERKEY', title: '未批注文献', authors: '张', year: '2026', citekey: 'Zhang2026', tags: [], annotations: [],
+  const row = { id: 1, key: 'PAPERKEY', libraryID: 1, title: '未批注文献', authors: '张', year: '2026', citekey: 'Zhang2026', tags: [], annotations: [],
     values: C.blankValues(), editable: true, paper, itemURL: 'zotero://select/library/items/PAPERKEY', pdfURL: '', attachmentID: null };
   const rowB = { ...row, values: C.blankValues() };
-  const loads = [], saves = [], logs = [], sourceCalls = [], apiCalls = [], keyCalls = [], batchSaves = [];
+  const loads = [], saves = [], logs = [], sourceCalls = [], apiCalls = [], keyCalls = [], batchSaves = [], importSaves = [];
+  const pickerSelections = [], pickerCalls = [], fileReads = [], fileWrites = [], files = new Map();
+  class FilePicker {
+    constructor() { this.modeOpen = 0; this.modeSave = 1; this.returnOK = 0; this.returnCancel = 1; this.returnReplace = 2; this.filters = []; }
+    init(_window, title, mode) { this.title = title; this.mode = mode; }
+    appendFilter(label, pattern) { this.filters.push({ label, pattern }); }
+    async show() {
+      pickerCalls.push({ title: this.title, mode: this.mode, defaultString: this.defaultString,
+        defaultExtension: this.defaultExtension, filters: clone(this.filters) });
+      const next = pickerSelections.shift();
+      this.file = next?.path;
+      return next?.result ?? this.returnCancel;
+    }
+  }
+  const queueFile = ({ name = '外部 AI 已填表.csv', text = '', bytes, prefix, result = 0 } = {}) => {
+    const path = '/fixture/' + files.size + '/' + name;
+    files.set(path, { leafName: name, fileSize: bytes ?? Buffer.byteLength(text), text, prefix });
+    pickerSelections.push({ path, result });
+    return path;
+  };
   let preferences = clone(saved), aiConfig = clone(aiSaved);
   const keyStore = new Map([['https://api.example.test/v1/chat/completions', 'fixture-only-key']]);
   let keyProvider = async endpoint => keyStore.get(endpoint) || '';
@@ -61,14 +81,30 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
       batchSaves.push({ projectID: project.id, changes: clone(changes), expected: clone(expected) });
       for (const id of Object.keys(changes)) if ((target.values[id] || '') !== expected[id]) throw new Error('模拟原子字段冲突');
       return { note: { key: 'AI_NOTEKEY' }, values: { ...target.values, ...changes } };
+    },
+    importRows: async (project, operations) => {
+      importSaves.push({ projectID: project.id, fields: clone(project.fields),
+        operations: operations.map(operation => ({ row: operation.row, changes: clone(operation.changes), expected: clone(operation.expected) })) });
+      for (const operation of operations) for (const id of Object.keys(operation.changes)) {
+        if ((operation.row.values[id] || '') !== operation.expected[id]) throw new Error('模拟整表导入冲突');
+      }
+      return { records: operations.map((operation, index) => ({ row: operation.row,
+        note: { key: 'TBLNOTE' + (index + 1) }, values: { ...operation.row.values, ...operation.changes } })) };
     } };
   const Z = { Prefs: { get: key => JSON.stringify(key === 'extensions.researchgrid.ai' ? aiConfig : preferences),
     set: (key, value) => { if (key === 'extensions.researchgrid.ai') aiConfig = JSON.parse(value); else preferences = JSON.parse(value); } },
     ProjectLitMatrix: { credentials: { getKey: async endpoint => { keyCalls.push(endpoint); return keyProvider(endpoint); } },
       openSettings() { settingsOpened++; } },
+    File: {
+      pathToFile(path) { assert.ok(files.has(path), 'the selected file must exist'); return files.get(path); },
+      async getBinaryContentsAsync(path, length) { return files.get(path).prefix ?? files.get(path).text.slice(0, length); },
+      async getContentsAsync(path, charset, length) { fileReads.push({ path, charset, length }); return files.get(path).text; },
+      async putContentsAsync(path, text) { fileWrites.push({ path, text }); },
+    },
     Notifier: { registerObserver() { return 1; }, unregisterObserver() {} }, logError: error => logs.push(error) };
   const timers = new Set();
-  const context = vm.createContext({ window, document, Node: window.Node, ChromeUtils: { importESModule: () => ({ Zotero: Z }) },
+  const context = vm.createContext({ window, document, Node: window.Node, ChromeUtils: {
+    importESModule: url => url.includes('filePicker.mjs') ? { FilePicker } : { Zotero: Z } },
     PLMCore: C, PLMRepository: class { constructor() { return repo; } }, location: { search: '' }, URLSearchParams, URL, AbortController,
     setTimeout(fn, ms) { const timer = setTimeout(fn, ms); timer.unref(); timers.add(timer); return timer; },
     clearTimeout(timer) { clearTimeout(timer); timers.delete(timer); } });
@@ -85,6 +121,8 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
   vm.runInContext(fs.readFileSync('plugin/content/fields.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/ai.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/ai-dialog.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/table-io.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/table-dialog.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/matrix.js', 'utf8'), context);
   await settle();
   const run = code => vm.runInContext(code, context);
@@ -105,8 +143,16 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
     await settle();
     return event;
   };
-  return { document, window, context, repo, projects, row, rowB, loads, saves, logs, run, cell, click, key,
-    sourceCalls, apiCalls, keyCalls, batchSaves, setAIConfig: value => { aiConfig = clone(value); },
+  const input = async (element, value, type = 'input') => {
+    assert.ok(element, 'the input control must be present');
+    if (typeof value === 'boolean') element.checked = value;
+    else element.value = value;
+    element.dispatchEvent(new window.Event(type, { bubbles: true }));
+    await settle();
+  };
+  return { document, window, context, repo, projects, row, rowB, loads, saves, logs, run, cell, click, key, input,
+    sourceCalls, apiCalls, keyCalls, batchSaves, importSaves, pickerCalls, fileReads, fileWrites, queueFile,
+    setAIConfig: value => { aiConfig = clone(value); },
     aiConfig: () => clone(aiConfig), keyProvider: fn => { keyProvider = fn; }, settingsOpened: () => settingsOpened,
     prefs: () => clone(preferences), cleanup() { for (const timer of timers) clearTimeout(timer); } };
 }
@@ -454,5 +500,187 @@ test('API config changed during endpoint-bound key lookup never sends the retrie
     assert.equal(f.apiCalls.length, 0);
     assert.ok(f.document.querySelector('#rg-ai-error').textContent.includes('API 设置已变化'));
     assert.equal(f.row.values.findings, '');
+  } finally { f.cleanup(); }
+});
+
+test('template export uses the filtered papers and every active project field without existing analyses', async () => {
+  const fields = [
+    { id: 'custom_design', label: '本项目研究设计', requirement: '说明研究设计、样本与原文页码。', visible: true, archived: false },
+    { id: 'custom_context', label: '本项目场景', requirement: '仅填写论文明确研究的应用场景。', visible: false, archived: false },
+    { id: 'remarks', label: '我的备注', requirement: '填写与本项目有关的个人想法。', visible: true, archived: false },
+    { id: 'retired_field', label: '已移出字段', requirement: '不应导出的旧字段。', visible: false, archived: true },
+  ];
+  const f = await ui({ saved: { version: 1, projects: { [PROJECT_A]: { fields } } } });
+  try {
+    f.row.values = { custom_design: 'PRIVATE_EXISTING_ANALYSIS', custom_context: 'PRIVATE_HIDDEN_ANALYSIS',
+      remarks: 'PRIVATE_HUMAN_REMARK', retired_field: 'PRIVATE_ARCHIVED_ANALYSIS' };
+    f.context.excludedRow = { ...f.row, id: 2, key: 'OTHERKEY', title: '不在本次筛选中的论文',
+      itemURL: 'zotero://select/library/items/OTHERKEY', values: { ...f.row.values } };
+    f.run('state.rows.push(excludedRow)');
+    await f.input(f.document.querySelector('#search'), f.row.title);
+    f.run('render()');
+    assert.equal(f.run('state.shown.length'), 1);
+    assert.equal(f.cell('custom_context'), null, 'hidden fields need not be displayed to be exported');
+
+    for (const format of ['csv', 'tsv']) {
+      await f.click(f.document.querySelector('#exportTemplate'));
+      assert.equal(f.document.querySelector('#templateDialog').open, true);
+      assert.match(f.document.querySelector('#templateContext').textContent, /1 篇文献.*3 个字段/);
+      assert.match(f.document.querySelector('#templateInstructions').value, /论文原文或 PDF/);
+      assert.equal(f.pickerCalls.length, f.fileWrites.length, 'opening export does not prompt or save automatically');
+      await f.input(f.document.querySelector('#templateFormat'), format, 'change');
+      const path = f.queueFile({ name: '待填模板.' + format });
+      await f.click(f.document.querySelector('#templateSave'));
+      assert.equal(f.document.querySelector('#templateDialog').open, false);
+      const exported = f.fileWrites.at(-1);
+      assert.equal(exported.path, path);
+      assert.ok(exported.text.startsWith('\ufeff'));
+      assert.ok(!exported.text.includes('PRIVATE_'));
+      assert.ok(!exported.text.includes('不在本次筛选中的论文'));
+      const table = Table.parse(exported.text);
+      assert.equal(table.delimiter, format === 'tsv' ? '\t' : ',');
+      assert.deepEqual(table.headers.slice(10), ['本项目研究设计 [custom_design]', '本项目场景 [custom_context]', '我的备注 [remarks]']);
+      assert.deepEqual(table.records[0].cells.slice(10), fields.filter(field => !field.archived).map(field => field.requirement));
+      assert.equal(table.records[0].cells[0], '填写要求');
+      assert.equal(table.records.length, 2);
+      const paper = table.records[1].cells;
+      assert.equal(paper[0], '文献');
+      assert.equal(paper[2], PROJECT_A);
+      assert.equal(paper[3], f.row.itemURL);
+      assert.equal(paper[4], f.row.key);
+      assert.deepEqual(paper.slice(10), ['', '', '']);
+      assert.equal(f.pickerCalls.at(-1).defaultExtension, format);
+      assert.match(f.pickerCalls.at(-1).defaultString, new RegExp('待填模板\\.' + format + '$'));
+    }
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length, 0);
+    assert.equal(f.apiCalls.length + f.keyCalls.length, 0);
+    assert.equal(f.row.values.remarks, 'PRIVATE_HUMAN_REMARK');
+  } finally { f.cleanup(); }
+});
+
+test('file import previews all current-project papers and updates the matrix only after aggregate commit', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '人工备注保留';
+    const other = { ...f.row, id: 2, key: 'SECOND01', title: '筛选外的同项目论文', citekey: 'Second2026',
+      itemURL: 'zotero://select/library/items/SECOND01', values: { ...C.blankValues(), remarks: '第二篇人工备注' } };
+    f.context.other = other;
+    f.run('state.rows.push(other)');
+    f.document.querySelector('#search').value = f.row.title;
+    f.run('render()');
+    const text = [
+      '项目标识\t文献标识\t标题\t核心结论 [findings]\t我的备注 [remarks]',
+      [PROJECT_A, f.row.itemURL, f.row.title, '外部 AI 结论一', '不应覆盖人工备注'].join('\t'),
+      [PROJECT_A, other.itemURL, other.title, '外部 AI 结论二', ''].join('\t'),
+    ].join('\r\n');
+    const path = f.queueFile({ name: '外部AI结果.tsv', text });
+    await f.click(f.document.querySelector('#importTable'));
+    assert.equal(f.run('tableManager.isOpen()'), true);
+    assert.equal(f.pickerCalls.length, 0);
+    assert.equal(f.importSaves.length, 0);
+    await f.click(f.document.querySelector('#rg-table-file'));
+    assert.equal(f.fileReads.length, 1);
+    assert.equal(f.fileReads[0].path, path);
+    assert.equal(f.fileReads[0].charset, 'utf-8');
+    assert.equal(f.document.querySelector('#rg-table-source').value, text);
+    assert.equal(f.run('tableManager.plan'), null);
+    assert.equal(f.importSaves.length, 0);
+    await f.click(f.document.querySelector('#rg-table-parse'));
+    assert.equal(f.run('tableManager.plan.stats.ready'), 2, 'import uses the project, including papers hidden by the current search');
+    assert.match(f.document.querySelector('#rg-table-preview').textContent, /外部 AI 结论一/);
+    assert.match(f.document.querySelector('#rg-table-preview').textContent, /外部 AI 结论二/);
+    assert.equal(f.importSaves.length, 0);
+    assert.equal(f.row.values.findings, '');
+    assert.equal(other.values.findings, '');
+    assert.equal(f.document.querySelector('#rg-table-apply').disabled, false);
+
+    let finishCommit;
+    const originalImport = f.repo.importRows;
+    f.repo.importRows = async (...args) => {
+      const result = await originalImport(...args);
+      await new Promise(resolve => { finishCommit = resolve; });
+      return result;
+    };
+    await f.click(f.document.querySelector('#rg-table-apply'));
+    assert.equal(f.importSaves.length, 1, 'all selected papers use a single repository transaction');
+    assert.equal(f.importSaves[0].projectID, PROJECT_A);
+    assert.deepEqual(clone(f.importSaves[0].operations.map(operation => ({ id: operation.row.id, changes: operation.changes, expected: operation.expected }))), [
+      { id: 1, changes: { findings: '外部 AI 结论一' }, expected: { findings: '' } },
+      { id: 2, changes: { findings: '外部 AI 结论二' }, expected: { findings: '' } },
+    ]);
+    assert.ok(f.importSaves[0].fields.some(field => field.id === 'remarks'));
+    assert.equal(f.run('state.saving'), true);
+    assert.equal(f.document.querySelector('#rg-table-apply').disabled, true);
+    assert.equal(f.row.values.findings, '', 'the visible table stays unchanged while the database commit is pending');
+    assert.equal(other.values.findings, '');
+    assert.equal(f.row.noteKey, undefined);
+    finishCommit();
+    await settle();
+    assert.equal(f.run('state.saving'), false);
+    assert.equal(f.row.values.findings, '外部 AI 结论一');
+    assert.equal(other.values.findings, '外部 AI 结论二');
+    assert.equal(f.row.values.remarks, '人工备注保留');
+    assert.equal(other.values.remarks, '第二篇人工备注');
+    assert.equal(f.rowB.values.findings, '', 'the same paper in another project keeps its own analysis');
+    assert.equal(f.row.noteKey, 'TBLNOTE1');
+    assert.equal(f.row.noteURL, 'zotero://select/library/items/TBLNOTE1');
+    assert.ok(f.cell('findings').textContent.includes('外部 AI 结论一'));
+    assert.match(f.document.querySelector('#saveStatus').textContent, /已导入所选表格内容/);
+    assert.match(f.document.querySelector('#rg-table-status').textContent, /已导入 2 篇文献/);
+    assert.equal(f.document.querySelector('#rg-table-apply').disabled, true);
+    assert.equal(await f.run('tableManager.apply()'), false);
+    assert.equal(f.importSaves.length, 1);
+    assert.equal(f.apiCalls.length + f.keyCalls.length + f.saves.length + f.batchSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('failed import keeps the file, mappings, selection and preview for retry without changing table values', async () => {
+  const f = await ui();
+  try {
+    f.row.values.findings = '已有人工分析';
+    f.row.values.remarks = '原有个人备注';
+    f.run('render()');
+    const text = '标题,外部AI回答\r\n未批注文献,"新的结论，含逗号\n和第二行"\r\n';
+    f.queueFile({ name: '自定义列名.csv', text });
+    await f.click(f.document.querySelector('#importTable'));
+    await f.click(f.document.querySelector('#rg-table-file'));
+    await f.click(f.document.querySelector('#rg-table-parse'));
+    assert.equal(f.run('tableManager.plan.stats.ready'), 0);
+    await f.input(f.document.querySelector('[data-table-column="1"]'), 'field:findings', 'change');
+    await f.input(f.document.querySelector('#rg-table-overwrite'), true, 'change');
+    assert.equal(f.run('tableManager.plan.stats.ready'), 1);
+    assert.match(f.document.querySelector('#rg-table-preview').textContent, /已有人工分析/);
+    assert.equal(f.importSaves.length, 0);
+    const mappingsBefore = clone(f.run('tableManager.mappings'));
+    const selectionBefore = clone(f.run('[...tableManager.selected]'));
+    const planBefore = clone(f.run('tableManager.plan.rows.map(({ line, changes, expected, status }) => ({ line, changes, expected, status }))'));
+    const originalImport = f.repo.importRows;
+    f.repo.importRows = async (...args) => { await originalImport(...args); throw new Error('模拟事务失败：第二篇文献已被修改'); };
+    await f.click(f.document.querySelector('#rg-table-apply'));
+    assert.equal(f.importSaves.length, 1);
+    assert.equal(f.run('state.saving'), false);
+    assert.equal(f.run('tableManager.isOpen()'), true);
+    assert.equal(f.run('tableManager.applied'), false);
+    assert.equal(f.document.querySelector('#rg-table-source').value, text);
+    assert.equal(f.document.querySelector('#rg-table-file-name').textContent, '自定义列名.csv');
+    assert.deepEqual(clone(f.run('tableManager.mappings')), mappingsBefore);
+    assert.deepEqual(clone(f.run('[...tableManager.selected]')), selectionBefore);
+    assert.deepEqual(clone(f.run('tableManager.plan.rows.map(({ line, changes, expected, status }) => ({ line, changes, expected, status }))')), planBefore);
+    assert.equal(f.document.querySelector('#rg-table-overwrite').checked, true);
+    assert.equal(f.document.querySelector('#rg-table-apply').disabled, false);
+    assert.match(f.document.querySelector('#rg-table-error').textContent, /模拟事务失败/);
+    assert.match(f.document.querySelector('#rg-table-status').textContent, /本次未写入/);
+    assert.equal(f.row.values.findings, '已有人工分析');
+    assert.equal(f.row.values.remarks, '原有个人备注');
+    assert.ok(f.cell('findings').textContent.includes('已有人工分析'));
+    assert.equal(f.row.noteKey, undefined);
+    assert.equal(f.row.noteURL, undefined);
+    f.repo.importRows = originalImport;
+    await f.click(f.document.querySelector('#rg-table-apply'));
+    assert.equal(f.importSaves.length, 2);
+    assert.equal(f.row.values.findings, '新的结论，含逗号\n和第二行');
+    assert.equal(f.row.values.remarks, '原有个人备注');
+    assert.equal(f.document.querySelector('#rg-table-apply').disabled, true);
+    assert.equal(f.apiCalls.length + f.keyCalls.length + f.saves.length + f.batchSaves.length, 0);
   } finally { f.cleanup(); }
 });

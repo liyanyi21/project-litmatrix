@@ -55,9 +55,11 @@ function savePrefs(patch = {}) {
 }
 let fieldManager;
 let aiManager;
+let tableManager;
+let templateExport;
 function showColumns() {
   if (!state.project || state.loading) return;
-  if (aiManager?.isOpen()) { toast("请先关闭 AI 总结窗口。"); return; }
+  if (aiManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) { toast("请先关闭当前 AI 或表格窗口。"); return; }
   if (!fieldManager) fieldManager = new RGFields.Manager({
     document, getProject: () => state.project, getFields: allFields,
     getTemplates: () => state.preferences.templates || [],
@@ -78,7 +80,7 @@ function showColumns() {
 }
 async function showAI(row) {
   if (!state.project || state.loading || state.saving) return;
-  if (fieldManager?.dialog?.open) return;
+  if (fieldManager?.dialog?.open || tableManager?.isOpen()) return;
   if (!aiManager) aiManager = new RGAIDialog.Manager({
     document, getProject: () => state.project, getFields: activeFields,
     beforeOpen: () => !state.editing || closeEditor(),
@@ -139,6 +141,8 @@ function setBusy(value) {
   state.loading = value;
   for (const id of ["project", "current", "recursive", "refresh", "columns"]) $("#" + id).disabled = value;
   $("#export").disabled = value || !state.shown.length;
+  $("#exportTemplate").disabled = value || !state.shown.length;
+  $("#importTable").disabled = value || !state.project || !state.project.library.editable;
   $("#columns").disabled = value || !state.project;
   $("#results").setAttribute("aria-busy", String(value));
 }
@@ -155,6 +159,12 @@ function syncControls() {
 async function selectProject(target) {
   const project = state.projects.find(p => typeof target === "string" ? p.id === target :
     p.libraryID === Number(target.libraryID) && p.collectionKey === target.collectionKey);
+  if (tableManager?.isOpen() || $("#templateDialog").open) {
+    if (project?.id === state.project?.id) return true;
+    $("#project").value = state.project?.id || "";
+    toast("请先关闭表格导入或模板导出窗口，再切换项目。");
+    return false;
+  }
   if (aiManager?.isOpen()) {
     if (project?.id === state.project?.id) return true;
     $("#project").value = state.project?.id || "";
@@ -236,6 +246,8 @@ function render() {
     ? `${state.shown.length} / ${state.rows.length} 篇文献 · ${state.shown.reduce((n, r) => n + r.annotations.length, 0)} 条批注 · 包含未批注文献`
     : "请选择研究项目";
   $("#export").disabled = state.loading || !state.shown.length;
+  $("#exportTemplate").disabled = state.loading || !state.shown.length;
+  $("#importTable").disabled = state.loading || !state.project || !state.project.library.editable;
   const fields = p.fields.filter(f => !f.archived && f.visible);
   $("#columns").disabled = state.loading || !state.project;
   const widths = [320, ...fields.map(f => f.id === "remarks" ? 320 : 290)];
@@ -427,6 +439,89 @@ function showAnnotations(row) {
       h("button", { onclick: safe(() => repo.openAnnotation(annotation)) }, `打开原文 · 第 ${annotation.page || "?"} 页`))));
   $("#annotationsDialog").showModal();
 }
+function showTemplateExport() {
+  if (!state.project || state.loading || !state.shown.length || state.saving) return;
+  if (aiManager?.isOpen() || tableManager?.isOpen() || fieldManager?.dialog?.open) return;
+  if (state.editing && !closeEditor()) return;
+  templateExport = { project: { ...state.project }, fields: activeFields(), rows: [...state.shown] };
+  $("#templateContext").textContent = `${state.project.name} · 当前筛选的 ${state.shown.length} 篇文献 · ${activeFields().length} 个字段`;
+  $("#templateInstructions").value = "请依据我提供的论文原文或 PDF，填写表格中的项目分析字段。\n"
+    + "1. 保留表头、字段 ID、项目标识、文献标识、文献Key和文献链接，保持每篇论文一行，不新增或合并文献。\n"
+    + "2. 第一条“填写要求”记录说明每个字段应填写什么，不是一篇论文。只填写“文献”行的分析字段。\n"
+    + "3. 根据每列的填写要求用中文简要总结。缺少依据时写“未提供／无法判断”，不要仅凭标题编造研究内容。\n"
+    + "4. 保留逗号、引号和换行的正确 CSV/TSV 转义。返回完整的 UTF-8 CSV 或 TSV 文件，不要转为图片。\n"
+    + "5. 不想导入的分析格子请留空。导入默认忽略空白，并保留 Zotero 中已有的内容。";
+  $("#templateError").textContent = "";
+  $("#templateDialog").showModal();
+}
+async function saveTemplateFile() {
+  if (!templateExport || $("#templateSave").disabled) return;
+  const snapshot = templateExport;
+  const format = $("#templateFormat").value === "tsv" ? "tsv" : "csv";
+  $("#templateSave").disabled = true;
+  $("#templateError").textContent = "";
+  try {
+    const content = RGTable.exportTemplate(snapshot.rows, snapshot.project, snapshot.fields, { delimiter: format === "tsv" ? "\t" : "," });
+    const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
+    const fp = new FilePicker();
+    fp.init(window, "导出待填模板", fp.modeSave);
+    fp.defaultString = `${snapshot.project.name.replace(/[\\/:*?"<>|]/g, "_")}-待填模板.${format}`;
+    fp.defaultExtension = format;
+    fp.appendFilter(format === "tsv" ? "TSV 表格" : "CSV 表格", `*.${format}`);
+    const result = await fp.show();
+    if (result !== fp.returnOK && result !== fp.returnReplace) return;
+    await Z.File.putContentsAsync(fp.file, content);
+    $("#templateDialog").close(); templateExport = null;
+    toast(`已导出 ${snapshot.rows.length} 篇文献的待填模板`);
+  } catch (error) { $("#templateError").textContent = error.message || String(error); }
+  finally { $("#templateSave").disabled = false; }
+}
+async function readImportFile() {
+  const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
+  const fp = new FilePicker();
+  fp.init(window, "选择已填写的 CSV / TSV 表格", fp.modeOpen);
+  fp.appendFilter("CSV / TSV 表格", "*.csv; *.tsv; *.txt");
+  if (await fp.show() !== fp.returnOK) return null;
+  const file = Z.File.pathToFile(fp.file);
+  const limit = 10 * 1024 * 1024;
+  if (file.fileSize > limit) throw new Error("导入文件超过 10 MB，请拆分后重试。");
+  const prefix = await Z.File.getBinaryContentsAsync(fp.file, 3);
+  const charset = prefix.startsWith("\xff\xfe") ? "utf-16le" : prefix.startsWith("\xfe\xff") ? "utf-16be" : "utf-8";
+  const text = await Z.File.getContentsAsync(fp.file, charset, limit + 4);
+  if (file.fileSize > limit) throw new Error("导入文件超过 10 MB，请拆分后重试。");
+  if (text.includes("\ufffd") || text.includes("\u0000")) throw new Error("文件编码无法可靠识别，请在 Excel/WPS 中另存为 UTF-8 CSV 或 Unicode TSV。");
+  return { name: file.leafName, text };
+}
+async function showTableImport() {
+  if (!state.project || state.loading || state.saving || !state.project.library.editable) return;
+  if (aiManager?.isOpen() || fieldManager?.dialog?.open) return;
+  if (!tableManager) tableManager = new RGTableDialog.Manager({
+    document, getProject: () => state.project ? { ...state.project, recursive: prefs().recursive } : null, getFields: activeFields, getRows: () => state.rows,
+    beforeOpen: () => !state.editing || closeEditor(), readFile: readImportFile,
+    save: async (project, operations) => {
+      state.saving = true;
+      try {
+        const result = await repo.importRows({ ...project, fields: allFields() }, operations);
+        for (const record of result.records) {
+          const targets = new Set([record.row, ...state.rows.filter(r => r.id === record.row.id && r.key === record.row.key)]);
+          for (const row of targets) {
+            row.values = record.values;
+            row.noteKey = record.note?.key || null;
+            row.noteURL = row.noteKey ? C.itemLink(project.library, row.noteKey) : "";
+          }
+        }
+        render();
+        $("#saveStatus").textContent = "已导入所选表格内容";
+        return result;
+      } finally {
+        state.saving = false;
+        if (state.pendingReload) scheduleReload();
+      }
+    },
+    notify: toast,
+  });
+  return tableManager.open();
+}
 async function exportCSV() {
   if (!state.project || !state.shown.length) return;
   const project = state.project;
@@ -465,6 +560,11 @@ async function init() {
   $("#recursive").addEventListener("change", safe(async () => { savePrefs({ recursive: $("#recursive").checked }); await reload(); }));
   $("#refresh").addEventListener("click", safe(reload));
   $("#export").addEventListener("click", safe(exportCSV));
+  $("#exportTemplate").addEventListener("click", showTemplateExport);
+  $("#templateSave").addEventListener("click", safe(saveTemplateFile));
+  for (const id of ["templateClose", "templateCancel"]) $("#" + id).addEventListener("click", () => { $("#templateDialog").close(); templateExport = null; });
+  $("#templateDialog").addEventListener("cancel", () => { templateExport = null; });
+  $("#importTable").addEventListener("click", safe(showTableImport));
   $("#columns").addEventListener("click", showColumns);
   $("#annotationsClose").addEventListener("click", () => $("#annotationsDialog").close());
   let searchTimer;
@@ -481,7 +581,8 @@ async function init() {
   window.addEventListener("beforeunload", event => {
     if (state.saving || (state.editing && editorValue() !== state.editing.original) ||
       (fieldManager?.dialog?.open && (fieldManager.busy || fieldManager.dirty())) ||
-      (aiManager?.isOpen() && (aiManager.busy || aiManager.dirty()))) { event.preventDefault(); event.returnValue = ""; }
+      (aiManager?.isOpen() && (aiManager.busy || aiManager.dirty())) ||
+      (tableManager?.isOpen() && (tableManager.busy || tableManager.dirty()))) { event.preventDefault(); event.returnValue = ""; }
   });
   const observerID = Z.Notifier.registerObserver({ notify: () => scheduleReload() },
     ["item", "item-tag", "collection", "collection-item"], "projectlitmatrix");
