@@ -19,6 +19,10 @@
 7. 点击“导出 CSV”，选择路径。导出当前搜索/分析状态过滤后的文献，包含全部七个分析字段，即使部分字段隐藏。
 8. 点击标题或“打开原文”打开 PDF/EPUB/HTML 阅读器；没有原文时定位 Zotero 条目。“批注”按钮列出原文批注，点击可跳到对应位置。
 
+## Zotero 设置入口
+
+打开 Zotero 的“设置”（Windows / Linux 部分版本称“首选项”），在左侧选择“研矩”。页面提供打开文献矩阵的入口和版本信息，并预留功能设置区域，后续配置项会集中在这里。现有字段、子分类与排序偏好继续在矩阵内按项目调整。
+
 ## 中文字段
 
 任务与证据类型、研究方法与样本、观测指标、核心结论、局限性、与我的研究的关系、我的备注。
@@ -52,13 +56,14 @@ npm test
 npm run build
 ```
 
-构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.1.1.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
+构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.1.2.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
 
 ## 文件组织
 
 - `plugin/bootstrap.js`：独立生命周期、菜单、窗口；不修改 LitMatrix 的全局对象或标签页钩子。
 - `plugin/content/core.js`：字段、项目身份、笔记编解码、论文级搜索和 CSV。
 - `plugin/content/repository.js`：Zotero 数据读写、项目笔记隔离、权限和冲突检查、原文跳转。
+- `plugin/content/preferences.xhtml` / `preferences.js`：Zotero 原生设置页容器与控制器。
 - `plugin/content/matrix.js`：中文矩阵、编辑、字段偏好、刷新和导出交互。
 - `tests/`：核心数据行为与 Zotero 适配器测试。
 - `scripts/build.py`：XPI 与对应源代码打包。

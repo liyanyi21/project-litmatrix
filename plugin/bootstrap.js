@@ -5,11 +5,12 @@
 const PLM_WINDOW = "zotero:projectlitmatrix";
 const PLM_STATE = "__projectLitMatrix";
 var chromeHandle = null;
+var preferencePaneID = null;
 
 function install() {}
 function uninstall() {}
 
-async function startup({ rootURI }) {
+async function startup({ rootURI, id, version }) {
   await Zotero.initializationPromise;
   Services.obs.notifyObservers(null, "startupcache-invalidate");
   Services.obs.notifyObservers(null, "chrome-flush-caches");
@@ -18,7 +19,14 @@ async function startup({ rootURI }) {
   chromeHandle = manager.registerChrome(Services.io.newURI(rootURI + "manifest.json"), [
     ["content", "projectlitmatrix", rootURI + "content/"],
   ]);
-  Zotero.ProjectLitMatrix = { open: openMatrix };
+  Zotero.ProjectLitMatrix = { open: openMatrix, version };
+  preferencePaneID = await Zotero.PreferencePanes.register({
+    pluginID: id,
+    id: "research-grid-preferences",
+    label: "研矩",
+    src: rootURI + "content/preferences.xhtml",
+    scripts: [rootURI + "content/preferences.js"],
+  });
   for (const win of Zotero.getMainWindows()) addToWindow(win);
 }
 
@@ -79,6 +87,10 @@ function openMatrix(win) {
 
 function shutdown(data, reason) {
   if (reason === APP_SHUTDOWN) return;
+  if (preferencePaneID) {
+    Zotero.PreferencePanes.unregister(preferencePaneID);
+    preferencePaneID = null;
+  }
   Services.wm.getMostRecentWindow(PLM_WINDOW)?.close();
   for (const win of Zotero.getMainWindows()) removeFromWindow(win);
   delete Zotero.ProjectLitMatrix;

@@ -1,0 +1,20 @@
+<vbox id="research-grid-preferences-content"
+      xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      onload="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.init();">
+  <groupbox>
+    <label><html:h2>文献矩阵</html:h2></label>
+    <description>按 Zotero 分类整理文献，为不同研究项目保存独立的分析与备注。</description>
+    <hbox>
+      <button id="research-grid-open-matrix" label="打开文献矩阵"
+              oncommand="(Zotero_Preferences.getScope?.('research-grid-preferences') || window).ResearchGridPreferences.openMatrix();" />
+    </hbox>
+    <description>显示字段、包含子分类和排序等偏好，可在文献矩阵中按项目调整。</description>
+    <description id="research-grid-preferences-error" role="alert" />
+  </groupbox>
+  <groupbox id="research-grid-feature-settings">
+    <label><html:h2>功能设置</html:h2></label>
+    <description>后续新增的功能设置将在这里提供。</description>
+  </groupbox>
+  <description>研矩 · ResearchGrid <html:span id="research-grid-version" /></description>
+</vbox>
