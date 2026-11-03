@@ -283,12 +283,18 @@
           records.push({ row: stage.row, note, values });
         }
       }).catch(async error => {
+        // Zotero marks errors raised after SQLite committed. The completed
+        // writes are real, so keep the result and let the UI display them.
+        if (error.committed) {
+          this.Z.logError?.(error);
+          return;
+        }
         // A rejected transaction has already rolled back SQLite, but Zotero's
         // cached existing Item objects can still contain a preceding save's
         // imported text. Use the same forced reload as Zotero's save-error
         // recovery, including the parent childItems cache refreshed by save().
         // New Items are unloaded by Zotero's own rollback callback.
-        if (!error.committed) {
+        {
           const reload = async (item, types) => {
             if (typeof item.reload === "function") await item.reload(types, true);
             else if (typeof this.Z.Items.reload === "function") await this.Z.Items.reload([item.id], types, true);

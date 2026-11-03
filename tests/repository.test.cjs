@@ -663,6 +663,32 @@ test('rollback clears a newly saved note from the parent childItems cache when a
   assert.equal(second.note.getNote(), html);
 });
 
+test('a marked post-commit error returns the saved import result without rollback cache repair', async () => {
+  const f = importFixture();
+  await f.repo.saveField(f.projectA, f.row, 'remarks', '提交前的原值', '');
+  const original = await f.repo.noteFor(f.parent, f.projectA);
+  let reloads = 0;
+  f.Item.prototype.reload = async () => { reloads++; throw new Error('committed writes must not be restored'); };
+  const error = Object.assign(new Error('post-commit cleanup failed'), { committed: true });
+  const logged = [];
+  f.Z.logError = value => logged.push(value);
+  f.Z.DB.executeTransaction = async callback => { await callback(); throw error; };
+  const result = await f.repo.importRows(f.projectA, [
+    importOperation(f.row, { remarks: '已经提交的新值' }, { remarks: '提交前的原值' }),
+    importOperation(f.secondRow, { findings: '第二篇已经提交的结论' }, { findings: '' }),
+  ]);
+  assert.equal(result.importedRows, 2);
+  assert.equal(result.changedFields, 2);
+  assert.equal(result.records.length, 2);
+  assert.equal(result.records[0].note, original.note);
+  assert.equal(result.records[0].values.remarks, '已经提交的新值');
+  assert.equal(result.records[1].values.findings, '第二篇已经提交的结论');
+  assert.equal((await f.repo.noteFor(f.parent, f.projectA)).values.remarks, '已经提交的新值');
+  assert.equal(f.second.notes.length, 1);
+  assert.equal(reloads, 0);
+  assert.deepEqual(logged, [error]);
+});
+
 test('import rechecks current project membership after the preview and before changing any note', async () => {
   const f = importFixture();
   f.a.getChildItems = () => [f.parent.id]; // Second paper was removed while preview stayed open.
