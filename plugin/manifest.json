@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "研矩 · ResearchGrid",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "按 Zotero 分类建立项目独立的中文文献矩阵，支持项目字段、AI 总结、CSV/TSV 导入导出和原文跳转。",
   "author": "liyanyi; based on LitMatrix by bapungiri",
   "icons": {

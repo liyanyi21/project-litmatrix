@@ -85,7 +85,4 @@ dialog::backdrop { background:#152b224d; }
 .selectionbar .hint { margin:0 0 0 auto; }
 #selectionCount { color:var(--accent); font-size:12px; min-width:85px; }
 .paper-select { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); margin-bottom:10px; cursor:pointer; }
-.highlight-preview { border:1px solid var(--line); border-radius:5px; padding:8px; margin-top:8px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:150px; overflow:auto; background:var(--surface); font-size:13px; }
-.highlight-preview:empty { display:none; }
-#editHighlightTools { margin-top:10px; }
 @media(max-width:1000px) { .selectionbar { padding:10px 16px 0; } }

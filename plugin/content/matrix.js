@@ -359,17 +359,14 @@ function render() {
       const value = row.values[field.id] || "";
       const td = h("td", { class: row.editable ? "analysis-cell" : "", tabindex: row.editable ? "0" : null,
         "data-row": row.id, "data-field": field.id,
-        "aria-label": `${row.title} · ${field.label}${row.editable ? "，按回车直接填写" : ""}` },
-        value ? h("div", { class: "cell-text", "data-row": row.id, "data-field": field.id }, RGHighlights.render(document, value, row.highlights?.[field.id] || [])) : h("span", { class: "placeholder" }, row.editable ? "点击直接填写…" : "—"));
+        "aria-label": `${row.title} · ${field.label}${row.editable ? "，双击或按回车编辑" : ""}` },
+        value ? h("div", { class: "cell-text", "data-row": row.id, "data-field": field.id }, RGHighlights.render(document, value, row.highlights?.[field.id] || [])) : h("span", { class: "placeholder" }, row.editable ? "双击填写…" : "—"));
       if (row.editable) {
         td.append(h("button", { class: "expand-cell", title: "在弹窗中编辑长内容", onclick: safe(async event => {
           event.stopPropagation(); await openEditor(row, field, "modal");
         }) }, "展开编辑"));
-        td.addEventListener("click", safe(event => {
+        td.addEventListener("dblclick", safe(event => {
           if (event.target.closest("button, textarea, input")) return;
-          const selection = window.getSelection?.();
-          if (selection && !selection.isCollapsed && selection.toString() &&
-            (!selection.anchorNode || td.contains(selection.anchorNode) || td.contains(selection.focusNode))) return;
           return openEditor(row, field);
         }));
         td.addEventListener("keydown", event => {
@@ -405,30 +402,6 @@ function editorDirty() {
   syncEditorText();
   return editorValue() !== state.editing.original || JSON.stringify(state.editing.highlights) !== JSON.stringify(state.editing.originalHighlights);
 }
-function refreshEditorPreview() {
-  if (!state.editing) return;
-  syncEditorText();
-  const preview = $(state.editing.mode === "inline" ? "#inlineHighlightPreview" : "#editHighlightPreview");
-  if (preview) {
-    preview.replaceChildren(...(state.editing.highlights.length ? [RGHighlights.render(document, editorValue(), state.editing.highlights)] : []));
-  }
-  editorToolbar?.refresh?.();
-}
-let editorToolbar;
-function buildEditorToolbar(input) {
-  editorToolbar = RGHighlights.toolbar(document, {
-    getText: () => { syncEditorText(); return input.value; },
-    getRanges: () => { syncEditorText(); return state.editing?.highlights || []; },
-    getSelection: () => ({ start: input.selectionStart || 0, end: input.selectionEnd || 0 }),
-    disabled: () => state.saving,
-    onChange: ranges => {
-      if (!state.editing || state.saving) return;
-      state.editing.highlights = ranges;
-      refreshEditorPreview(); input.focus();
-    },
-  });
-  return editorToolbar;
-}
 function autoSizeInline() {
   const input = $("#inlineValue");
   if (!input) return;
@@ -459,7 +432,7 @@ async function openEditor(row, field, mode = "inline") {
     state.editing.cell = cell;
     cell.classList.add("editing-cell");
     const input = h("textarea", { id: "inlineValue", rows: 3, "aria-label": `${field.label} · 直接填写`,
-      placeholder: field.requirement || "直接填写，Shift+Enter 换行", oninput: () => { refreshEditorPreview(); autoSizeInline(); },
+      placeholder: field.requirement || "直接填写，Shift+Enter 换行", oninput: () => { syncEditorText(); autoSizeInline(); },
       onkeydown: event => {
         if (event.isComposing) return;
         if (event.key === "Escape") { event.preventDefault(); closeEditor(); }
@@ -467,8 +440,7 @@ async function openEditor(row, field, mode = "inline") {
         else if (event.key === "Tab") { event.preventDefault(); safe(() => saveAndMove(event.shiftKey ? -1 : 1))(); }
       } });
     input.value = state.editing.original;
-    cell.replaceChildren(...[input, buildEditorToolbar(input),
-      h("div", { id: "inlineHighlightPreview", class: "highlight-preview", "aria-label": "文字高亮预览" }),
+    cell.replaceChildren(...[input,
       field.requirement ? h("p", { class: "inline-requirement" }, field.requirement) : null,
       h("div", { class: "inline-actions" },
         h("button", { id: "inlineSave", class: "primary", onclick: safe(saveEditor) }, "保存"),
@@ -477,8 +449,8 @@ async function openEditor(row, field, mode = "inline") {
       h("p", { class: "inline-help" }, "Enter 保存 · Shift+Enter 换行 · Tab 下一格"),
       h("p", { id: "inlineError", class: "error", role: "alert" })].filter(Boolean));
     // Events on the inline controls must not open another editor on the parent cell.
-    for (const event of ["click", "keydown"]) cell.addEventListener(event, e => e.stopPropagation());
-    refreshEditorPreview(); autoSizeInline(); input.focus();
+    for (const event of ["click", "dblclick", "keydown"]) cell.addEventListener(event, e => e.stopPropagation());
+    autoSizeInline(); input.focus();
   }
   return true;
 }
@@ -491,8 +463,6 @@ function prepareDialog(value) {
   $("#editValue").value = value;
   $("#editValue").placeholder = field.requirement || "填写你的分析，支持多行文本…";
   $("#editError").textContent = "";
-  $("#editHighlightTools").replaceChildren(buildEditorToolbar($("#editValue")));
-  refreshEditorPreview();
   $("#editDialog").showModal(); $("#editValue").focus();
 }
 function expandEditor() {
@@ -522,7 +492,7 @@ function collapseEditor() {
     state.editing.originalHighlights = previous.originalHighlights;
     state.editing.highlights = previous.highlights;
     state.editing.textSnapshot = value;
-    $("#inlineValue").value = value; refreshEditorPreview(); autoSizeInline();
+    $("#inlineValue").value = value; autoSizeInline();
   }).catch(failure);
 }
 function closeEditor(force = false) {
@@ -553,7 +523,6 @@ async function saveEditor(event) {
   state.saving = true;
   const controls = mode === "inline" ? ["inlineSave", "inlineCancel", "inlineExpand", "inlineValue"] : ["editSave", "editCancel", "editClose", "editCollapse", "editValue"];
   for (const id of controls) $("#" + id).disabled = true;
-  editorToolbar?.refresh?.();
   const error = mode === "inline" ? $("#inlineError") : $("#editError");
   error.textContent = "";
   let successful = false;
@@ -570,7 +539,6 @@ async function saveEditor(event) {
   finally {
     state.saving = false;
     for (const id of controls) $("#" + id).disabled = false;
-    editorToolbar?.refresh?.();
   }
   if (successful) { closeEditor(true); toast(`已保存“${field.label}”`); }
   return successful;
@@ -739,7 +707,7 @@ async function init() {
   $("#editForm").addEventListener("submit", event => { event.preventDefault(); safe(saveEditor)(); });
   for (const id of ["editCancel", "editClose"]) $("#" + id).addEventListener("click", () => closeEditor());
   $("#editDialog").addEventListener("cancel", event => { event.preventDefault(); closeEditor(); });
-  $("#editValue").addEventListener("input", refreshEditorPreview);
+  $("#editValue").addEventListener("input", syncEditorText);
   $("#editValue").addEventListener("keydown", event => {
     if (!event.isComposing && event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); safe(saveEditor)(); }
   });

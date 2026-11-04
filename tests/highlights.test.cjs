@@ -59,33 +59,13 @@ test('highlight rendering preserves plain multiline Unicode and never interprets
   assert.throws(() => H.render(doc, 'abc', [{ start: 0, end: 1, color: 'url(javascript:evil)' }]));
 });
 
-test('textarea toolbar applies and removes only selected phrases, leaves the draft text unchanged and honors disabled state', async () => {
-  const { document: doc, window } = document();
-  const text = '第一句。第二句。'; let ranges = [], changes = 0, disabled = false;
-  let selection = { start: 4, end: 7 };
-  const bar = H.toolbar(doc, { getText: () => text, getRanges: () => ranges, getSelection: () => selection,
-    onChange: next => { ranges = next; changes++; }, disabled: () => disabled });
-  doc.body.append(bar);
-  const click = selector => bar.querySelector(selector).dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true }));
-  click('[data-highlight-color="blue"]');
-  assert.deepEqual(ranges, [{ start: 4, end: 7, color: 'blue' }]);
-  assert.equal(text, '第一句。第二句。'); assert.equal(changes, 1);
-  selection = { start: 5, end: 6 }; click('[data-highlight-remove]');
-  assert.deepEqual(ranges, [{ start: 4, end: 5, color: 'blue' }, { start: 6, end: 7, color: 'blue' }]);
-  disabled = true; bar.refresh(); click('[data-highlight-color="pink"]');
-  assert.equal(changes, 2);
-  assert.ok([...bar.querySelectorAll('button')].every(button => button.disabled));
-  disabled = false; bar.refresh(); selection = { start: 2, end: 2 }; click('[data-highlight-color="yellow"]');
-  assert.equal(changes, 2);
-  assert.ok(bar.textContent.includes('请先在输入框中选中'));
-});
-
 test('palette mouse down preserves the text selection before a color command', () => {
-  const { document: doc, window } = document();
-  const bar = H.toolbar(doc, { getText: () => 'abc', getRanges: () => [], getSelection: () => ({ start: 0, end: 1 }), onChange() {} });
-  const event = new window.Event('mousedown', { bubbles: true, cancelable: true });
-  bar.querySelector('[data-highlight-color="green"]').dispatchEvent(event);
+  const f = fixture();
+  f.capture();
+  const event = new f.window.Event('mousedown', { bubbles: true, cancelable: true });
+  f.manager.root.querySelector('[data-highlight-color="green"]').dispatchEvent(event);
   assert.equal(event.defaultPrevented, true);
+  assert.equal(f.saved.length, 0);
 });
 
 test('native selection offsets use UTF-16 text across nested spans and reject cross-cell or multiple ranges', () => {
@@ -103,11 +83,14 @@ test('native selection offsets use UTF-16 text across nested spans and reject cr
   assert.equal(H.readSelection({ ...fakeSelection(first, 0, last, 1), isCollapsed: true }), null);
 });
 
-test('selecting a displayed phrase does not save until color is explicitly chosen, then sends a stable format snapshot', async () => {
+test('clicking a color immediately saves the displayed selection with a stable format snapshot', async () => {
   const f = fixture();
   assert.equal(f.capture(), true);
   assert.equal(f.manager.isOpen(), true); assert.equal(f.saved.length, 0);
-  assert.equal(await f.manager.apply('yellow'), true);
+  assert.match(f.manager.status.textContent, /点颜色立即高亮并自动保存/);
+  assert.equal(f.manager.root.querySelector('[data-highlight-save]'), null);
+  f.manager.root.querySelector('[data-highlight-color="yellow"]').dispatchEvent(new f.window.Event('click', { bubbles: true, cancelable: true }));
+  await settle();
   assert.equal(f.saved.length, 1);
   const [project, row, fieldID, text, expected, options] = f.saved[0];
   assert.equal(project.id, 'project-A'); assert.equal(row, f.row); assert.equal(fieldID, 'findings');
@@ -129,15 +112,21 @@ test('removing a portion of a saved highlight preserves the two unaffected range
 
 test('a persistence error keeps the selected phrase and toolbar available for retry without changing user data', async () => {
   const f = fixture();
+  f.row.highlights.findings = [{ start: 0, end: 4, color: 'green' }];
+  f.cell.replaceChildren(H.render(f.doc, f.original, f.row.highlights.findings));
+  const originalHTML = f.cell.innerHTML;
   f.save(async () => { throw new Error('模拟高亮冲突'); }); f.capture();
-  assert.equal(await f.manager.apply('pink'), false);
+  f.manager.root.querySelector('[data-highlight-color="pink"]').dispatchEvent(new f.window.Event('click', { bubbles: true, cancelable: true }));
+  await settle();
   assert.equal(f.manager.isOpen(), true); assert.equal(f.manager.snapshot.text, f.original);
   assert.ok(f.manager.status.textContent.includes('模拟高亮冲突'));
-  assert.deepEqual(f.row.highlights.findings, []); assert.equal(f.manager.busy, false);
+  assert.deepEqual(f.row.highlights.findings, [{ start: 0, end: 4, color: 'green' }]);
+  assert.equal(f.cell.innerHTML, originalHTML, 'failed immediate saves leave the original displayed color intact');
+  assert.equal(f.manager.busy, false);
   let recovered;
   f.save(async (...args) => { recovered = args; });
   assert.equal(await f.manager.apply('pink'), true);
-  assert.deepEqual(recovered[5].expectedHighlights, []);
+  assert.deepEqual(recovered[5].expectedHighlights, [{ start: 0, end: 4, color: 'green' }]);
 });
 
 test('project, schema, text, mark, and detached cell changes prevent stale highlight writes', async () => {

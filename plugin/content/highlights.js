@@ -43,28 +43,6 @@
       onclick: event => { event.preventDefault(); event.stopPropagation(); run(null); } }, "清除高亮"));
     return buttons;
   }
-  function toolbar(document, options) {
-    const bar = element(document, "div", { class: "rg-highlight-editor-toolbar", role: "group", "aria-label": "所选文字高亮" });
-    const status = element(document, "span", { class: "rg-highlight-toolbar-hint", role: "status", "aria-live": "polite" }, "选中文字后设置高亮");
-    const disabled = () => typeof options.disabled === "function" ? options.disabled() : !!options.disabled;
-    const run = color => {
-      if (disabled()) return;
-      try {
-        const text = String(options.getText() ?? "");
-        const selection = options.getSelection?.();
-        if (!selection || !Number.isInteger(selection.start) || !Number.isInteger(selection.end) || selection.end <= selection.start) {
-          status.textContent = "请先在输入框中选中要高亮的文字。"; return;
-        }
-        const next = Core().applyHighlight(text, options.getRanges() || [], selection.start, selection.end, color);
-        options.onChange(next);
-        status.textContent = color ? "已设置高亮，保存后生效。" : "已移除所选高亮，保存后生效。";
-      } catch (error) { status.textContent = error.message || "无法设置高亮，请重新选择文字。"; }
-    };
-    bar.append(...colorButtons(document, run), status);
-    bar.refresh = () => { for (const button of bar.querySelectorAll("button")) button.disabled = disabled(); };
-    bar.refresh();
-    return bar;
-  }
   function cellFor(node) {
     const parent = node?.nodeType === 1 ? node : node?.parentElement;
     return parent?.closest?.(".cell-text[data-row][data-field]") || null;
@@ -126,7 +104,7 @@
       this.snapshot = { project: { ...project }, field: { ...field }, schema: fieldSignature(this.options.getFields()),
         row: { id: row.id, key: row.key, libraryID: row.libraryID }, text, ranges: copy(ranges), start, end, element: selectedElement };
       this.context.textContent = `${field.label} · 已选 ${end - start} 字符`;
-      this.status.textContent = "选择颜色后保存到当前项目笔记。";
+      this.status.textContent = "点颜色立即高亮并自动保存到当前项目笔记。";
       this.root.hidden = false; this.sync(); return true;
     }
     guard() {
@@ -176,7 +154,7 @@
       this.root.remove(); this.snapshot = null;
     }
   }
-  const api = { render, toolbar, readSelection, Manager };
+  const api = { render, readSelection, Manager };
   root.RGHighlights = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(globalThis);

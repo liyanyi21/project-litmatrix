@@ -130,13 +130,21 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
   await settle();
   const run = code => vm.runInContext(code, context);
   const cell = id => document.querySelector(`td[data-field="${id}"]`);
-  const click = async element => {
+  const pointerEvent = async (element, type, detail) => {
     assert.ok(element, 'the target control must be present');
-    const event = new window.Event('click', { bubbles: true, cancelable: true });
+    const event = new window.Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'detail', { value: detail });
     element.dispatchEvent(event);
     // Native DOM retains Event.target after dispatch; LinkeDOM removes it.
     event.target = element;
     await settle();
+  };
+  const click = element => pointerEvent(element, 'click', 1);
+  const dblclick = async element => {
+    // Match the browser order so an accidental single-click editor is caught.
+    await pointerEvent(element, 'click', 1);
+    await pointerEvent(element, 'click', 2);
+    await pointerEvent(element, 'dblclick', 2);
   };
   const key = async (element, key, options = {}) => {
     const event = new window.Event('keydown', { bubbles: true, cancelable: true });
@@ -153,7 +161,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
     element.dispatchEvent(new window.Event(type, { bubbles: true }));
     await settle();
   };
-  return { document, window, context, repo, projects, row, rowB, loads, saves, logs, run, cell, click, key, input,
+  return { document, window, context, repo, projects, row, rowB, loads, saves, logs, run, cell, click, dblclick, key, input,
     sourceCalls, apiCalls, keyCalls, batchSaves, importSaves, pickerCalls, fileReads, fileWrites, queueFile,
     setAIConfig: value => { aiConfig = clone(value); },
     aiConfig: () => clone(aiConfig), keyProvider: fn => { keyProvider = fn; }, settingsOpened: () => settingsOpened,
@@ -180,13 +188,13 @@ test('read error leaves a clear retry state and disables export', async () => {
   } finally { f.cleanup(); }
 });
 
-test('clicking a cell starts direct table editing without covering the other columns', async () => {
+test('double-clicking a cell starts direct table editing without covering the other columns', async () => {
   const f = await ui();
   try {
-    await f.click(f.cell('remarks'));
+    await f.dblclick(f.cell('remarks'));
     assert.ok(f.cell('remarks').querySelector('#inlineValue'), f.logs.map(error => error.stack).join('\n'));
     assert.equal(f.document.querySelector('#editDialog').hasAttribute('open'), false);
-    assert.ok(f.cell('findings').textContent.includes('点击直接填写'));
+    assert.ok(f.cell('findings').textContent.includes('双击'));
     f.document.querySelector('#inlineValue').value = '项目备注';
     await f.click(f.document.querySelector('#inlineSave'));
     assert.equal(f.row.values.remarks, '项目备注');
@@ -197,10 +205,41 @@ test('clicking a cell starts direct table editing without covering the other col
   } finally { f.cleanup(); }
 });
 
-test('expanding and returning to the table preserves the same unsaved multiline draft', async () => {
+test('single-clicking empty or filled cells leaves the matrix in reading mode', async () => {
   const f = await ui();
   try {
     await f.click(f.cell('remarks'));
+    assert.equal(f.document.querySelector('#inlineValue'), null);
+    assert.equal(f.run('state.editing'), null);
+    f.row.values.remarks = '可直接阅读和选择的文字。';
+    f.run('render()');
+    await f.click(f.cell('remarks').querySelector('.cell-text'));
+    assert.equal(f.document.querySelector('#inlineValue'), null);
+    assert.equal(f.document.querySelector('#editDialog').hasAttribute('open'), false);
+    assert.equal(f.run('state.editing'), null);
+    assert.equal(f.saves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('double-clicking selected text edits the cell even when a reading selection is active', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '双击这个词进入编辑。';
+    f.run('render()');
+    f.window.getSelection = () => ({ isCollapsed: false, toString: () => '这个词', removeAllRanges() {} });
+    assert.equal(f.run(`highlightManager.capture({element:document.querySelector('td[data-field="remarks"] .cell-text'), start:2,end:5})`), true);
+    assert.equal(f.run('highlightManager.isOpen()'), true);
+    await f.dblclick(f.cell('remarks').querySelector('.cell-text'));
+    assert.equal(f.document.querySelector('#inlineValue').value, '双击这个词进入编辑。');
+    assert.equal(f.run('highlightManager.isOpen()'), false, 'an editing cell must not retain a reading toolbar');
+    assert.equal(f.saves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('expanding and returning to the table preserves the same unsaved multiline draft', async () => {
+  const f = await ui();
+  try {
+    await f.dblclick(f.cell('remarks'));
     const draft = '第一行：还没有保存\n第二行：包含逗号、引号“内容”\n' + '长文本。'.repeat(80);
     f.document.querySelector('#inlineValue').value = draft;
     await f.click(f.document.querySelector('#inlineExpand'));
@@ -234,7 +273,7 @@ test('the explicit long-text control opens a modal and can save without first cr
 test('returning from the popup does not lose a draft when a deferred search hides its row', async () => {
   const f = await ui();
   try {
-    await f.click(f.cell('remarks'));
+    await f.dblclick(f.cell('remarks'));
     f.document.querySelector('#inlineValue').value = '筛选变化也不能丢失的草稿';
     f.document.querySelector('#search').value = 'no-matching-paper';
     f.run('render()');
@@ -252,10 +291,10 @@ test('a save conflict keeps the inline draft and prevents switching to another c
   const f = await ui();
   try {
     f.repo.saveField = async () => { throw new Error('冲突：别处已修改'); };
-    await f.click(f.cell('remarks'));
+    await f.dblclick(f.cell('remarks'));
     const input = f.document.querySelector('#inlineValue');
     input.value = '不能丢失的草稿';
-    await f.click(f.cell('findings'));
+    await f.dblclick(f.cell('findings'));
     assert.equal(f.document.querySelector('#inlineValue'), input);
     assert.equal(input.value, '不能丢失的草稿');
     assert.ok(f.document.querySelector('#inlineError').textContent.includes('冲突'));
@@ -281,7 +320,7 @@ test('a modal save failure also keeps text available for recovery', async () => 
 test('render requests do not replace an active draft and refusing discard keeps the project unchanged', async () => {
   const f = await ui();
   try {
-    await f.click(f.cell('remarks'));
+    await f.dblclick(f.cell('remarks'));
     const input = f.document.querySelector('#inlineValue');
     input.value = '仍在编辑';
     f.run('render()');
@@ -297,7 +336,7 @@ test('render requests do not replace an active draft and refusing discard keeps 
 test('inline keyboard handling leaves IME composition and Shift+Enter unsaved, then Enter commits', async () => {
   const f = await ui();
   try {
-    await f.click(f.cell('remarks'));
+    await f.dblclick(f.cell('remarks'));
     const input = f.document.querySelector('#inlineValue');
     input.value = '输入法组合中的中文';
     await f.key(input, 'Enter', { isComposing: true });
@@ -315,7 +354,7 @@ test('inline keyboard handling leaves IME composition and Shift+Enter unsaved, t
 test('Tab commits a cell before editing the next visible field', async () => {
   const f = await ui();
   try {
-    await f.click(f.cell('task_evidence'));
+    await f.dblclick(f.cell('task_evidence'));
     const input = f.document.querySelector('#inlineValue');
     input.value = '任务描述';
     await f.key(input, 'Tab');
@@ -328,7 +367,7 @@ test('Tab commits a cell before editing the next visible field', async () => {
 test('canceling an inline draft does not save it or reopen the editor through cell bubbling', async () => {
   const f = await ui();
   try {
-    await f.click(f.cell('remarks'));
+    await f.dblclick(f.cell('remarks'));
     f.document.querySelector('#inlineValue').value = '不保存的草稿';
     await f.click(f.document.querySelector('#inlineCancel'));
     assert.equal(f.document.querySelector('#inlineValue'), null);
@@ -763,7 +802,7 @@ test('selected papers generate independent batch requests and apply once after e
   } finally { f.cleanup(); }
 });
 
-test('reading selections highlight exact text without opening the editor and save formatting-only changes', async () => {
+test('reading selections save exact highlights immediately without any editor or preview step', async () => {
   const f = await ui();
   try {
     f.row.values.remarks = '关键结果。第二句。';
@@ -772,38 +811,68 @@ test('reading selections highlight exact text without opening the editor and sav
     await f.click(f.cell('remarks'));
     assert.equal(f.document.querySelector('#inlineValue'), null, 'drag-selected text must remain available for highlighting');
     assert.equal(f.run(`highlightManager.capture({element:document.querySelector('td[data-field="remarks"] .cell-text'), start:0,end:4})`), true);
+    assert.equal(f.saves.length, 0, 'selecting text alone must not save');
+    assert.equal(f.document.querySelector('#inlineHighlightPreview'), null);
+    assert.equal(f.document.querySelector('#editHighlightPreview'), null);
     await f.click(f.document.querySelector('#rg-highlight-selection-toolbar [data-highlight-color="yellow"]'));
     assert.equal(f.saves.length, 1);
     assert.equal(f.saves[0].value, '关键结果。第二句。');
     assert.equal(f.saves[0].expected, '关键结果。第二句。');
     assert.deepEqual(f.saves[0].options.highlights, [{ start:0, end:4, color:'yellow' }]);
+    assert.deepEqual(f.saves[0].options.expectedHighlights, []);
     assert.equal(f.cell('remarks').querySelector('[data-rg-highlight="yellow"]').textContent, '关键结果');
     assert.equal(f.row.values.remarks, '关键结果。第二句。');
+    assert.equal(f.run('highlightManager.isOpen()'), false);
+    assert.equal(f.document.querySelector('#inlineValue'), null);
+    assert.equal(f.document.querySelector('#inlineSave'), null);
+    assert.equal(f.document.querySelector('#editDialog').hasAttribute('open'), false);
   } finally { f.cleanup(); }
 });
 
-test('editor colors survive popup roundtrip and formatting-only drafts require save or discard', async () => {
+test('existing highlights survive textarea edits and a popup roundtrip without editor palettes or previews', async () => {
   const f = await ui();
   try {
-    f.row.values.remarks = '需要标记的句子。';
+    const original = '需要标记的句子。';
+    const originalHighlights = [{ start:0, end:4, color:'pink' }];
+    f.row.values.remarks = original;
+    f.row.highlights.remarks = clone(originalHighlights);
     f.run('render()');
-    await f.click(f.cell('remarks'));
+    assert.equal(f.cell('remarks').querySelector('[data-rg-highlight="pink"]').textContent, '需要标记');
+    await f.dblclick(f.cell('remarks'));
     const input = f.document.querySelector('#inlineValue');
-    input.selectionStart = 0; input.selectionEnd = 4;
-    await f.click(f.cell('remarks').querySelector('[data-highlight-color="pink"]'));
-    assert.ok(f.document.querySelector('#inlineHighlightPreview [data-rg-highlight="pink"]'));
+    assert.equal(input.localName, 'textarea');
+    assert.equal(input.value, original);
+    assert.equal(f.cell('remarks').querySelector('[data-highlight-color]'), null);
+    assert.equal(f.document.querySelector('#inlineHighlightPreview'), null);
+    await f.input(input, original + '\n表内补充');
+    assert.deepEqual(clone(f.run('state.editing.highlights')), originalHighlights);
     assert.equal(f.saves.length, 0);
     await f.click(f.document.querySelector('#inlineExpand'));
-    assert.equal(f.document.querySelector('#editHighlightPreview [data-rg-highlight="pink"]').textContent, '需要标记');
+    assert.equal(f.document.querySelector('#editValue').localName, 'textarea');
+    assert.equal(f.document.querySelector('#editValue').value, original + '\n表内补充');
+    assert.equal(f.document.querySelector('#editDialog [data-highlight-color]'), null);
+    assert.equal(f.document.querySelector('#editHighlightPreview'), null);
+    assert.equal(f.document.querySelector('#editHighlightTools'), null);
+    await f.input(f.document.querySelector('#editValue'), '前言：' + original + '\n表内补充');
+    assert.deepEqual(clone(f.run('state.editing.highlights')), [{ start:3, end:7, color:'pink' }]);
+    const changed = '前言：' + original + '\n表内补充\n弹窗补充';
+    await f.input(f.document.querySelector('#editValue'), changed);
     await f.click(f.document.querySelector('#editCollapse'));
-    assert.equal(f.document.querySelector('#inlineHighlightPreview [data-rg-highlight="pink"]').textContent, '需要标记');
+    assert.equal(f.document.querySelector('#inlineValue').value, changed);
+    assert.equal(f.cell('remarks').querySelector('[data-highlight-color]'), null);
+    assert.equal(f.document.querySelector('#inlineHighlightPreview'), null);
+    assert.deepEqual(clone(f.run('state.editing.originalHighlights')), originalHighlights);
+    assert.deepEqual(clone(f.run('state.editing.highlights')), [{ start:3, end:7, color:'pink' }]);
     f.window.confirm = () => false;
     await f.click(f.document.querySelector('#inlineCancel'));
-    assert.ok(f.document.querySelector('#inlineValue'), 'canceling a formatting draft must request discard confirmation');
+    assert.ok(f.document.querySelector('#inlineValue'), 'discarding the edited text still requires confirmation');
     await f.click(f.document.querySelector('#inlineSave'));
     assert.equal(f.saves.length, 1);
-    assert.deepEqual(f.saves[0].options.highlights, [{ start:0, end:4, color:'pink' }]);
-    assert.deepEqual(f.saves[0].options.expectedHighlights, []);
+    assert.equal(f.saves[0].value, changed);
+    assert.equal(f.saves[0].expected, original);
+    assert.deepEqual(f.saves[0].options.highlights, [{ start:3, end:7, color:'pink' }]);
+    assert.deepEqual(f.saves[0].options.expectedHighlights, originalHighlights);
+    assert.equal(f.row.values.remarks, changed);
     assert.equal(f.cell('remarks').querySelector('[data-rg-highlight="pink"]').textContent, '需要标记');
   } finally { f.cleanup(); }
 });
