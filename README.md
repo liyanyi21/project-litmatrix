@@ -19,6 +19,15 @@
 7. 点击“导出已填 CSV”，选择路径。导出当前搜索/分析状态过滤后的文献，按当前项目的字段名称与顺序导出，包含隐藏字段，不包含已移出的归档字段。
 8. 点击标题或“打开原文”打开 PDF/EPUB/HTML 阅读器；没有原文时定位 Zotero 条目。“批注”按钮列出原文批注，点击可跳到对应位置。
 
+## 标签与 Zotero 条目信息列
+
+- 顶部“显示标签”控制文献卡片里的标签，按项目记住。隐藏只影响表格显示，标签仍可搜索，CSV 仍保留标签。
+- 点击“显示选项”，勾选需要的条目信息，可在“已选列顺序”中上下移动，保存后出现在文献列和分析列之间。首次默认不添加额外资料列。
+- 可选 22 项：文献标题、作者、年份、出版日期、期刊/会议/书名、条目类型、DOI、网址、摘要、卷、期、页码、出版社、出版地、语言、ISBN、ISSN、访问日期、添加时间、修改时间、其他信息和引用键。作者列显示完整姓名，引用键沿用插件已有的 Zotero/Better BibTeX/Extra 解析结果。
+- 这些列直接读取 Zotero，空值显示“—”；需要修改时可点“Zotero 条目”编辑原条目，再刷新矩阵。资料列为只读，不作为 AI 待填分析字段，也不保存到分析子笔记。
+- 搜索包含条目资料。已填 CSV 会附加所选资料列，保留所选顺序，并用 `[zotero:字段名]` 区分；导入时自动跳过这些只读资料列。待填模板仍仅包含原有文献识别信息和项目分析字段。
+- 标签显示与资料列选择保存在本机的各项目偏好中，暂不跨设备同步。项目分析内容和原文标签均独立于这些显示选择。
+
 ## Zotero 设置入口
 
 打开 Zotero 的“设置”（Windows / Linux 部分版本称“首选项”），在左侧选择“研矩”。页面提供打开矩阵、编辑项目字段与模板的入口及版本信息。先在 Zotero 主窗口选择一个项目分类，然后进入相应设置。
@@ -103,7 +112,7 @@ npm test
 npm run build
 ```
 
-构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.6.1.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
+构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.7.0.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
 
 ## 文件组织
 
@@ -112,6 +121,7 @@ npm run build
 - `plugin/content/repository.js`：Zotero 数据读写、项目笔记隔离、权限和冲突检查、原文跳转。
 - `plugin/content/preferences.xhtml` / `preferences.js`：Zotero 原生设置页容器与控制器。
 - `plugin/content/fields.js` / `fields.css`：项目字段草稿、归档恢复与通用模板管理。
+- `plugin/content/display.js` / `display.css`：项目标签显示和只读 Zotero 资料列选择、排序。
 - `plugin/content/ai.js`：OpenAI 兼容配置、请求、字段提示与严格结果解析。
 - `plugin/content/ai-dialog.js` / `ai-dialog.css`：来源/发送范围、AI 草稿预览与确认写入。
 - `plugin/content/ai-batch.js` / `ai-batch.css`：多篇顺序生成、逐篇草稿和统一确认写入。

@@ -41,7 +41,7 @@ function prefs() {
     if (first) first.visible = true;
   }
   return { ...saved, fields, columns: fields.filter(f => !f.archived && f.visible).map(f => f.id),
-    recursive: saved.recursive !== false, sort: saved.sort || "title" };
+    display: RGDisplay.normalize(saved.display), recursive: saved.recursive !== false, sort: saved.sort || "title" };
 }
 function allFields() { return prefs().fields; }
 function activeFields() { return allFields().filter(f => !f.archived); }
@@ -54,6 +54,7 @@ function savePrefs(patch = {}) {
   state.project.fields = allFields();
 }
 let fieldManager;
+let displayManager;
 let aiManager;
 let batchManager;
 let highlightManager;
@@ -61,7 +62,7 @@ let tableManager;
 let templateExport;
 function showColumns() {
   if (!state.project || state.loading) return;
-  if (aiManager?.isOpen() || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) { toast("请先关闭当前 AI 或表格窗口。"); return; }
+  if (displayManager?.isOpen() || aiManager?.isOpen() || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) { toast("请先关闭当前显示选项、AI 或表格窗口。"); return; }
   if (!fieldManager) fieldManager = new RGFields.Manager({
     document, getProject: () => state.project, getFields: allFields,
     getTemplates: () => state.preferences.templates || [],
@@ -79,6 +80,33 @@ function showColumns() {
     notify: toast,
   });
   return fieldManager.open().catch(failure);
+}
+function metadataColumns() {
+  return prefs().display.metadataColumns.map(id => RGDisplay.COLUMNS.find(column => column.id === id));
+}
+function syncDisplayControls() {
+  $("#showTags").checked = prefs().display.showTags;
+  for (const id of ["showTags", "displayOptions"]) $("#" + id).disabled = state.loading || !state.project;
+  for (const tags of $("#grid tbody").querySelectorAll(".tags")) tags.hidden = !prefs().display.showTags;
+}
+function toggleTags() {
+  try {
+    if (!state.project || state.loading || state.saving || displayManager?.isOpen()) return;
+    savePrefs({ display: { ...prefs().display, showTags: $("#showTags").checked } });
+  } catch (error) { failure(error); }
+  finally { syncDisplayControls(); }
+}
+async function showDisplayOptions() {
+  if (!state.project || state.loading || state.saving) return;
+  if (fieldManager?.dialog?.open || aiManager?.isOpen() || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) return;
+  highlightManager?.clear();
+  if (!displayManager) displayManager = new RGDisplay.Manager({
+    document, getProject: () => state.project, getDisplay: () => prefs().display,
+    beforeOpen: () => !state.editing || closeEditor(),
+    save: async display => { savePrefs({ display: RGDisplay.normalize(display) }); render(); },
+    notify: toast,
+  });
+  return displayManager.open();
 }
 async function generateAI({ config, project, fields, paper, source, signal }) {
   const current = () => RGAI.normalizeConfig(new RGAI.ConfigStore(Z).getConfig());
@@ -141,7 +169,7 @@ function selectFromZotero() {
 }
 async function showBatchAI() {
   if (!state.project || state.loading || state.saving || !selectedRows().length) return;
-  if (aiManager?.isOpen() || fieldManager?.dialog?.open || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) return;
+  if (displayManager?.isOpen() || aiManager?.isOpen() || fieldManager?.dialog?.open || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) return;
   highlightManager?.clear();
   if (!batchManager) batchManager = new RGAIBatch.Manager({
     document, getProject: () => state.project ? { ...state.project, recursive: prefs().recursive } : null,
@@ -163,7 +191,7 @@ async function showBatchAI() {
 }
 async function showAI(row) {
   if (!state.project || state.loading || state.saving) return;
-  if (fieldManager?.dialog?.open || batchManager?.isOpen() || tableManager?.isOpen()) return;
+  if (displayManager?.isOpen() || fieldManager?.dialog?.open || batchManager?.isOpen() || tableManager?.isOpen()) return;
   if (!aiManager) aiManager = new RGAIDialog.Manager({
     document, getProject: () => state.project, getFields: activeFields,
     beforeOpen: () => !state.editing || closeEditor(),
@@ -217,6 +245,7 @@ function setBusy(value) {
   $("#importTable").disabled = value || !state.project || !state.project.library.editable;
   $("#columns").disabled = value || !state.project;
   $("#results").setAttribute("aria-busy", String(value));
+  syncDisplayControls();
 }
 function syncControls() {
   const p = prefs();
@@ -227,10 +256,17 @@ function syncControls() {
   $("#projectHint").textContent = state.project
     ? `${state.project.label} · 分析与备注只属于此项目${state.project.library.editable ? "" : " · 此文献库为只读"}`
     : "在 Zotero 中选择分类，再点击“使用当前分类”。每个分类的分析与备注独立保存。";
+  syncDisplayControls();
 }
 async function selectProject(target) {
   const project = state.projects.find(p => typeof target === "string" ? p.id === target :
     p.libraryID === Number(target.libraryID) && p.collectionKey === target.collectionKey);
+  if (displayManager?.isOpen()) {
+    if (project?.id === state.project?.id) return true;
+    $("#project").value = state.project?.id || "";
+    toast("请先保存或关闭显示选项，再切换项目。");
+    return false;
+  }
   if (tableManager?.isOpen() || $("#templateDialog").open) {
     if (project?.id === state.project?.id) return true;
     $("#project").value = state.project?.id || "";
@@ -328,11 +364,14 @@ function render() {
   $("#exportTemplate").disabled = state.loading || !state.shown.length;
   $("#importTable").disabled = state.loading || !state.project || !state.project.library.editable;
   const fields = p.fields.filter(f => !f.archived && f.visible);
+  const metadata = metadataColumns();
   $("#columns").disabled = state.loading || !state.project;
-  const widths = [320, ...fields.map(f => f.id === "remarks" ? 320 : 290)];
+  const widths = [320, ...metadata.map(column => column.width), ...fields.map(f => f.id === "remarks" ? 320 : 290)];
   $("#grid").style.width = `${widths.reduce((a, b) => a + b, 0)}px`;
   $("#grid colgroup").replaceChildren(...widths.map(width => h("col", { style: `width:${width}px` })));
   $("#grid thead").replaceChildren(h("tr", {}, h("th", { scope: "col" }, "文献与原文"),
+    ...metadata.map(column => h("th", { scope: "col", class: "metadata-heading", "data-metadata": column.id,
+      title: "来自 Zotero 条目，只读；可在 Zotero 中编辑原条目" }, h("div", {}, column.label), h("span", { class: "metadata-source" }, "Zotero 条目信息"))),
     ...fields.map(f => h("th", { scope: "col", title: f.requirement || f.label }, h("div", {}, f.label), f.requirement ? h("div", { class: "field-requirement" }, f.requirement) : null))));
   const fragment = document.createDocumentFragment();
   for (const row of state.shown) {
@@ -347,7 +386,7 @@ function render() {
       h("div", { class: "paper-author" }, `${row.authors || "作者未记录"}${row.year ? `（${row.year}）` : ""}`),
       h("button", { class: "paper-title", onclick: safe(() => repo.openPaper(row)), title: row.attachmentID ? "打开原文" : "在 Zotero 中定位文献" }, row.title),
       h("div", { class: "citekey" }, row.citekey),
-      h("div", { class: "tags" }, ...row.tags.map(t => h("span", { class: "tag" }, t))),
+      h("div", { class: "tags", hidden: !p.display.showTags }, ...row.tags.map(t => h("span", { class: "tag" }, t))),
       h("div", { class: "paper-actions" },
         h("button", { onclick: safe(() => repo.openPaper(row)) }, row.attachmentID ? "打开原文" : "定位文献"),
         h("button", { class: "ai-summary", onclick: safe(() => showAI(row)), title: "按当前项目字段生成 AI 草稿" }, "AI 总结"),
@@ -375,7 +414,10 @@ function render() {
       }
       return td;
     });
-    fragment.append(h("tr", {}, identity, ...cells));
+    const metadataCells = metadata.map(column => h("td", { class: "metadata-cell", "data-metadata": column.id, "data-row": row.id,
+      "aria-label": `${row.title} · ${column.label}，Zotero 条目信息，只读` },
+      h("div", { class: "metadata-text" }, String(row.metadata?.[column.id] ?? "") || "—")));
+    fragment.append(h("tr", {}, identity, ...metadataCells, ...cells));
   }
   $("#grid tbody").replaceChildren(fragment);
   $("#grid").hidden = !state.shown.length;
@@ -383,6 +425,7 @@ function render() {
   $("#empty").replaceChildren(h("h2", {}, state.loading ? "正在整理文献…" : !state.project ? "从一个研究项目开始" : state.rows.length ? "没有符合条件的文献" : "这个分类还没有文献"),
     h("p", {}, !state.project ? "在 Zotero 主窗口选择分类后，点击“使用当前分类”。" : state.rows.length ? "可以清空搜索或切换分析状态。" : "添加文献后点击刷新；子分类可通过上方开关包含。"));
   $("#results").scrollTop = scroll;
+  syncDisplayControls();
   syncSelection();
 }
 function editorValue() {
@@ -554,7 +597,7 @@ function showAnnotations(row) {
 }
 function showTemplateExport() {
   if (!state.project || state.loading || !state.shown.length || state.saving) return;
-  if (aiManager?.isOpen() || batchManager?.isOpen() || tableManager?.isOpen() || fieldManager?.dialog?.open) return;
+  if (displayManager?.isOpen() || aiManager?.isOpen() || batchManager?.isOpen() || tableManager?.isOpen() || fieldManager?.dialog?.open) return;
   if (state.editing && !closeEditor()) return;
   templateExport = { project: { ...state.project }, fields: activeFields(), rows: [...state.shown] };
   $("#templateContext").textContent = `${state.project.name} · 当前筛选的 ${state.shown.length} 篇文献 · ${activeFields().length} 个字段`;
@@ -607,7 +650,7 @@ async function readImportFile() {
 }
 async function showTableImport() {
   if (!state.project || state.loading || state.saving || !state.project.library.editable) return;
-  if (aiManager?.isOpen() || batchManager?.isOpen() || fieldManager?.dialog?.open) return;
+  if (displayManager?.isOpen() || aiManager?.isOpen() || batchManager?.isOpen() || fieldManager?.dialog?.open) return;
   if (!tableManager) tableManager = new RGTableDialog.Manager({
     document, getProject: () => state.project ? { ...state.project, recursive: prefs().recursive } : null, getFields: activeFields, getRows: () => state.rows,
     beforeOpen: () => !state.editing || closeEditor(), readFile: readImportFile,
@@ -639,7 +682,7 @@ async function showTableImport() {
 async function exportCSV() {
   if (!state.project || !state.shown.length) return;
   const project = state.project;
-  const csv = C.toCSV(state.shown, project.name, project.id, activeFields());
+  const csv = C.toCSV(state.shown, project.name, project.id, activeFields(), metadataColumns());
   const count = state.shown.length;
   const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
   const fp = new FilePicker();
@@ -666,7 +709,7 @@ async function init() {
   readPrefs(); refreshChoices();
   highlightManager = new RGHighlights.Manager({
     document, getProject: () => state.project, getFields: activeFields, getRows: () => state.rows,
-    beforeSave: () => !state.editing && !state.saving && !state.loading && !aiManager?.isOpen() && !batchManager?.isOpen() && !tableManager?.isOpen() && !fieldManager?.dialog?.open && !$("#templateDialog").open,
+    beforeSave: () => !state.editing && !state.saving && !state.loading && !displayManager?.isOpen() && !aiManager?.isOpen() && !batchManager?.isOpen() && !tableManager?.isOpen() && !fieldManager?.dialog?.open && !$("#templateDialog").open,
     save: async (project, row, fieldID, value, expected, options) => {
       if (state.saving || state.editing) throw new Error("请先保存或关闭正在编辑的内容。");
       state.saving = true;
@@ -698,6 +741,8 @@ async function init() {
   $("#templateDialog").addEventListener("cancel", () => { templateExport = null; });
   $("#importTable").addEventListener("click", safe(showTableImport));
   $("#columns").addEventListener("click", showColumns);
+  $("#displayOptions").addEventListener("click", safe(showDisplayOptions));
+  $("#showTags").addEventListener("change", toggleTags);
   $("#annotationsClose").addEventListener("click", () => $("#annotationsDialog").close());
   let searchTimer;
   $("#search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { savePrefs({ search: $("#search").value }); render(); }, 150); });
@@ -713,6 +758,7 @@ async function init() {
   });
   window.addEventListener("beforeunload", event => {
     if (state.saving || (state.editing && editorDirty()) ||
+      (displayManager?.isOpen() && (displayManager.busy || displayManager.dirty())) ||
       (fieldManager?.dialog?.open && (fieldManager.busy || fieldManager.dirty())) ||
       (aiManager?.isOpen() && (aiManager.busy || aiManager.dirty())) ||
       (batchManager?.isOpen() && (batchManager.busy || batchManager.dirty())) ||

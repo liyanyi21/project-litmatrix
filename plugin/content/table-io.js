@@ -152,6 +152,7 @@
   function inferMappings(headers, fields) {
     const active = activeFields(fields);
     return headers.map(header => {
+      if (/\[zotero:[a-zA-Z][a-zA-Z0-9_-]*\]\s*$/.test(header)) return "ignore";
       const explicit = explicitID(header);
       if (explicit) return active.some(field => field.id === explicit) ? "field:" + explicit : "ignore";
       if (active.some(field => field.id === header.trim())) return "field:" + header.trim();
@@ -191,7 +192,8 @@
         metaColumns.get(type).push(index);
       } else error("表格列映射无效。");
     });
-    const ignored = table.headers.filter((header, index) => chosen[index] === "ignore" && !KNOWN_IGNORED.has(headerNorm(header)));
+    const ignored = table.headers.filter((header, index) => chosen[index] === "ignore" && !KNOWN_IGNORED.has(headerNorm(header))
+      && !/\[zotero:[a-zA-Z][a-zA-Z0-9_-]*\]\s*$/.test(header));
     for (const header of ignored) if (candidates(header, active).length > 1) warnings.push(`列“${header}”可能对应多个字段，已忽略，请手动指定列映射。`);
     if (ignored.length) warnings.push(`未映射的列不会导入：${ignored.slice(0, 8).join("、")}${ignored.length > 8 ? ` 等 ${ignored.length} 列` : ""}。`);
     if (!fieldColumns.length) warnings.push("没有映射到当前项目分析字段，请先调整列映射。");

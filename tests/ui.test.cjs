@@ -126,6 +126,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
   vm.runInContext(fs.readFileSync('plugin/content/table-dialog.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/ai-batch.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/highlights.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/display.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/matrix.js', 'utf8'), context);
   await settle();
   const run = code => vm.runInContext(code, context);
@@ -176,6 +177,193 @@ test('successful project load renders all papers and clears the loading status',
     assert.ok(!f.document.querySelector('#status').textContent.includes('正在读取'));
     assert.equal(f.document.querySelector('#export').disabled, false);
     assert.equal(f.document.querySelector('#grid').hidden, false);
+  } finally { f.cleanup(); }
+});
+
+test('tags are shown by default and hiding them keeps tag search and CSV values intact', async () => {
+  const f = await ui();
+  try {
+    f.row.tags = ['远程监控', '只通过标签匹配'];
+    f.run('render()');
+    assert.equal(f.document.querySelector('#showTags').checked, true);
+    assert.match(f.document.querySelector('td.identity').textContent, /远程监控/);
+    assert.equal(f.document.querySelector('td.identity .tags').hidden, false);
+    await f.input(f.document.querySelector('#showTags'), false, 'change');
+    assert.equal(f.prefs().projects[PROJECT_A].display.showTags, false);
+    assert.equal(f.document.querySelector('td.identity .tags').hidden, true);
+    assert.deepEqual(f.row.tags, ['远程监控', '只通过标签匹配']);
+    f.document.querySelector('#search').value = '只通过标签匹配';
+    f.run('render()');
+    assert.equal(f.run('state.shown.length'), 1, 'tag visibility must not change search matching');
+    const path = f.queueFile({ name: '隐藏标签的矩阵.csv' });
+    await f.click(f.document.querySelector('#export'));
+    assert.equal(f.fileWrites.at(-1).path, path);
+    const table = Table.parse(f.fileWrites.at(-1).text);
+    assert.equal(table.records[0].cells[table.headers.indexOf('标签')], '远程监控; 只通过标签匹配');
+    assert.equal(table.headers.some(header => header.includes('[zotero:')), false, 'the default CSV keeps its existing columns');
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('tag visibility is saved independently for each project and survives reopening', async () => {
+  const f = await ui();
+  let saved;
+  try {
+    f.row.tags = ['项目甲标签'];
+    f.rowB.tags = ['项目乙标签'];
+    f.run('render()');
+    await f.input(f.document.querySelector('#showTags'), false, 'change');
+    await f.run(`selectProject('${PROJECT_B}')`);
+    assert.equal(f.document.querySelector('#showTags').checked, true);
+    assert.match(f.document.querySelector('td.identity').textContent, /项目乙标签/);
+    assert.equal(f.document.querySelector('td.identity .tags').hidden, false);
+    await f.run(`selectProject('${PROJECT_A}')`);
+    assert.equal(f.document.querySelector('#showTags').checked, false);
+    assert.equal(f.document.querySelector('td.identity .tags').hidden, true);
+    assert.equal(f.prefs().projects[PROJECT_B].display.showTags, true);
+    saved = f.prefs();
+  } finally { f.cleanup(); }
+  const reopened = await ui({ saved });
+  try {
+    assert.equal(reopened.document.querySelector('#showTags').checked, false);
+    await reopened.run(`selectProject('${PROJECT_B}')`);
+    assert.equal(reopened.document.querySelector('#showTags').checked, true);
+  } finally { reopened.cleanup(); }
+});
+
+test('a failed tag preference write restores the checkbox and leaves the displayed tags unchanged', async () => {
+  const f = await ui();
+  try {
+    f.row.tags = ['继续显示的标签'];
+    f.run('render()');
+    const before = f.prefs();
+    f.run("Z.Prefs.set = () => { throw new Error('模拟显示设置写入失败'); }");
+    await f.input(f.document.querySelector('#showTags'), false, 'change');
+    assert.deepEqual(f.prefs(), before);
+    assert.equal(f.run('prefs().display.showTags'), true);
+    assert.equal(f.document.querySelector('#showTags').checked, true);
+    assert.match(f.document.querySelector('td.identity').textContent, /继续显示的标签/);
+    assert.equal(f.document.querySelector('td.identity .tags').hidden, false);
+    assert.ok(f.logs.some(error => /模拟显示设置写入失败/.test(error.message)));
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('display options save selected metadata in the chosen order without changing analysis fields', async () => {
+  const f = await ui({ saved: { version: 1, projects: { [PROJECT_A]: {
+    display: { showTags: true, metadataColumns: ['year', 'title'] },
+  } } } });
+  try {
+    f.row.metadata = { year: '2024', title: '元数据标题', DOI: '10.1234/example' };
+    f.run('render()');
+    const fieldsBefore = clone(f.run('allFields()'));
+    const before = f.prefs();
+    await f.click(f.document.querySelector('#displayOptions'));
+    assert.equal(f.document.querySelector('#displayDialog').open, true);
+    assert.equal(f.document.querySelector('[data-metadata-column="year"]').checked, true);
+    assert.equal(f.document.querySelector('[data-metadata-column="title"]').checked, true);
+    await f.input(f.document.querySelector('[data-metadata-column="DOI"]'), true, 'change');
+    await f.click(f.document.querySelector('[data-display-move="up"][data-display-column="DOI"]'));
+    await f.click(f.document.querySelector('[data-display-move="up"][data-display-column="DOI"]'));
+    await f.input(f.document.querySelector('#rg-display-tags'), false, 'change');
+    assert.deepEqual(f.prefs(), before, 'display changes remain a draft until Save');
+    assert.equal(f.document.querySelector('td.metadata-cell[data-metadata="DOI"]'), null);
+    await f.click(f.document.querySelector('#rg-display-save'));
+    assert.equal(f.document.querySelector('#displayDialog').open, false);
+    assert.deepEqual(f.prefs().projects[PROJECT_A].display, { showTags: false, metadataColumns: ['DOI', 'year', 'title'] });
+    assert.deepEqual(clone(f.run('allFields()')), fieldsBefore);
+    assert.equal(f.document.querySelector('#showTags').checked, false);
+    const cells = [...f.document.querySelector('#grid tbody tr').children];
+    assert.equal(cells[0].classList.contains('identity'), true);
+    assert.deepEqual(cells.slice(1, 4).map(cell => cell.dataset.metadata), ['DOI', 'year', 'title']);
+    assert.equal(cells[4].hasAttribute('data-field'), true, 'analysis columns follow the read-only metadata columns');
+    assert.deepEqual(cells.slice(1, 4).map(cell => cell.textContent), ['10.1234/example', '2024', '元数据标题']);
+    await f.run(`selectProject('${PROJECT_B}')`);
+    assert.equal(f.document.querySelector('td.metadata-cell'), null);
+    assert.equal(f.document.querySelector('#showTags').checked, true);
+    await f.run(`selectProject('${PROJECT_A}')`);
+    assert.deepEqual([...f.document.querySelectorAll('td.metadata-cell')].map(cell => cell.dataset.metadata), ['DOI', 'year', 'title']);
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('a failed display dialog save preserves its draft without exposing unsaved columns', async () => {
+  const f = await ui();
+  try {
+    await f.click(f.document.querySelector('#displayOptions'));
+    await f.input(f.document.querySelector('[data-metadata-column="DOI"]'), true, 'change');
+    const before = f.prefs();
+    f.context.originalPrefSet = f.run('Z.Prefs.set');
+    f.run("Z.Prefs.set = () => { throw new Error('模拟显示列写入失败'); }");
+    await f.click(f.document.querySelector('#rg-display-save'));
+    assert.equal(f.document.querySelector('#displayDialog').open, true);
+    assert.equal(f.document.querySelector('[data-metadata-column="DOI"]').checked, true);
+    assert.deepEqual(f.prefs(), before);
+    assert.equal(f.document.querySelector('td.metadata-cell'), null);
+    f.run('Z.Prefs.set = originalPrefSet');
+    await f.click(f.document.querySelector('#rg-display-save'));
+    assert.equal(f.document.querySelector('#displayDialog').open, false);
+    assert.deepEqual(f.prefs().projects[PROJECT_A].display.metadataColumns, ['DOI']);
+    assert.equal(f.document.querySelector('td.metadata-cell[data-metadata="DOI"]').textContent, '—');
+  } finally { f.cleanup(); }
+});
+
+test('metadata cells render missing values and unsafe text safely and cannot become editable AI fields', async () => {
+  const f = await ui({ saved: { version: 1, projects: { [PROJECT_A]: {
+    display: { showTags: true, metadataColumns: ['title', 'DOI', 'creators'] },
+    fields: [{ id: 'custom_design', label: '研究设计', requirement: '仅填写原文研究设计。', visible: true, archived: false }],
+  } } } });
+  try {
+    const unsafe = '<img src=x onerror="window.metadataInjected=true"><script>window.metadataInjected=true</script>';
+    f.row.metadata = { title: unsafe, creators: '张三；李四' };
+    f.run('render()');
+    const titleCell = f.document.querySelector('td.metadata-cell[data-metadata="title"]');
+    assert.equal(titleCell.textContent, unsafe);
+    assert.equal(titleCell.querySelector('img,script'), null);
+    assert.equal(f.window.metadataInjected, undefined);
+    assert.equal(f.document.querySelector('td.metadata-cell[data-metadata="DOI"]').textContent, '—');
+    assert.equal(f.document.querySelector('td.metadata-cell[data-metadata="creators"]').textContent, '张三；李四');
+    await f.dblclick(titleCell);
+    assert.equal(f.run('state.editing'), null);
+    assert.equal(f.document.querySelector('#inlineValue'), null);
+    assert.equal(f.document.querySelector('#editDialog').hasAttribute('open'), false);
+    assert.equal(f.saves.length, 0);
+    await f.click(f.document.querySelector('.ai-summary'));
+    assert.deepEqual(clone(f.run('aiManager.fields.map(field => field.id)')), ['custom_design']);
+    assert.equal(f.document.querySelector('[data-ai-field="title"], [data-ai-field="DOI"], [data-ai-field="creators"]'), null);
+    await f.run('aiManager.generate()');
+    const payload = JSON.parse(f.apiCalls[0].options.body);
+    const content = payload.messages.at(-1).content;
+    const packet = JSON.parse(content.slice(content.indexOf('{')));
+    assert.deepEqual(packet.requestedFields.map(field => field.id), ['custom_design']);
+    assert.equal(f.batchSaves.length, 0, 'generating a draft does not write metadata or analyses');
+  } finally { f.cleanup(); }
+});
+
+test('filled CSV includes the selected read-only metadata while the fill-in template keeps its original schema', async () => {
+  const f = await ui({ saved: { version: 1, projects: { [PROJECT_A]: {
+    display: { showTags: false, metadataColumns: ['DOI', 'year', 'title'] },
+  } } } });
+  try {
+    f.row.metadata = { DOI: '10.1234/read-only', year: '2024', title: '元数据标题,含逗号' };
+    f.row.values.findings = '已有分析';
+    f.run('render()');
+    f.queueFile({ name: '包含元数据.csv' });
+    await f.click(f.document.querySelector('#export'));
+    const csv = Table.parse(f.fileWrites.at(-1).text);
+    const metadataIndexes = csv.headers.map((header, index) => ({ id: header.match(/\[zotero:([^\]]+)\]$/)?.[1], index })).filter(column => column.id);
+    assert.deepEqual(metadataIndexes.map(column => column.id), ['DOI', 'year', 'title']);
+    assert.ok(metadataIndexes.every(column => csv.headers[column.index].startsWith('Zotero · ')));
+    assert.deepEqual(metadataIndexes.map(column => csv.records[0].cells[column.index]), ['10.1234/read-only', '2024', '元数据标题,含逗号']);
+    assert.equal(csv.records[0].cells[csv.headers.indexOf('核心结论')], '已有分析');
+    await f.click(f.document.querySelector('#exportTemplate'));
+    f.queueFile({ name: '仍然只填分析的模板.csv' });
+    await f.click(f.document.querySelector('#templateSave'));
+    const template = Table.parse(f.fileWrites.at(-1).text);
+    assert.equal(template.headers.some(header => header.includes('[zotero:')), false);
+    assert.deepEqual(template.headers.slice(10), clone(f.run('activeFields().map(field => `${field.label} [${field.id}]`)')));
+    assert.ok(template.records[1].cells.slice(10).every(value => value === ''));
+    assert.equal(f.apiCalls.length + f.saves.length + f.batchSaves.length + f.importSaves.length, 0);
   } finally { f.cleanup(); }
 });
 

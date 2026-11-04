@@ -228,3 +228,20 @@ test('table plans capture independent formatting snapshots only for selected tex
   assert.equal(result.rows[0].expectedHighlights.findings[0].color, 'yellow');
   assert.equal(result.rows[0].highlights, undefined, 'the importer supplies no replacement formatting');
 });
+
+test('read-only Zotero metadata export columns are ignored when importing analysis, including colliding labels', () => {
+  const current = clone(rows).map(row => ({ ...row, tags: [], annotations: [], metadata: { DOI: '10.1234/example' } }));
+  const exported = C.toCSV(current, project.name, project.id, fields, [{ id: 'DOI', label: '任务要求' }]);
+  const parsed = IO.parse(exported);
+  const index = parsed.headers.indexOf('Zotero · 任务要求 [zotero:DOI]');
+  assert.ok(index >= 0);
+  const mappings = IO.inferMappings(parsed.headers, fields);
+  assert.equal(mappings[index], 'ignore');
+  parsed.records[0].cells[index] = '<script>metadata must not become analysis</script>';
+  parsed.records[0].cells[parsed.headers.indexOf('项目发现')] = '由外部表格填写的事实';
+  const result = IO.buildPlan(parsed, { project, fields, rows: current });
+  assert.equal(result.stats.ready, 1);
+  assert.deepEqual(result.rows[0].changes, { findings: '由外部表格填写的事实' });
+  assert.equal(result.warnings.some(warning => warning.includes('zotero:')), false);
+  assert.equal(current[0].metadata.DOI, '10.1234/example');
+});

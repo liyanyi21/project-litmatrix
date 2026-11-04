@@ -180,3 +180,26 @@ test('highlighted note values keep CSV as portable plain text rather than HTML m
   assert.ok(!csv.includes('background-color'));
   assert.ok(!csv.includes('data-rg-highlight'));
 });
+
+test('project search includes Zotero metadata while analysis state still depends on project analysis', () => {
+  const rows = [{ title: '论文', values: C.blankValues(), tags: ['隐藏标签'], annotations: [],
+    metadata: { DOI: '10.1234/example', abstractNote: '视觉注意与多屏监控' } }];
+  assert.equal(C.filterRows(rows, '10.1234 视觉注意').length, 1);
+  assert.equal(C.filterRows(rows, '隐藏标签').length, 1);
+  assert.equal(C.filterRows(rows, '视觉注意', 'filled').length, 0);
+  assert.equal(C.filterRows(rows, '视觉注意', 'empty').length, 1);
+});
+
+test('filled CSV includes selected read-only metadata in order with safe cells and preserves the legacy default', () => {
+  const IO = require('../plugin/content/table-io.js');
+  const row = { title: '论文', values: C.blankValues(), tags: ['标签'], annotations: [],
+    metadata: { DOI: '10.1234/example', abstractNote: '=公式开头\n含逗号，和"引号"' } };
+  const columns = [{ id: 'abstractNote', label: '摘要' }, { id: 'DOI', label: 'DOI' }, { id: 'publisher', label: '出版社' }];
+  const old = IO.parse(C.toCSV([row], '项目', 'PROJECTA'));
+  assert.ok(!old.headers.some(header => header.includes('[zotero:')));
+  const result = IO.parse(C.toCSV([row], '项目', 'PROJECTA', C.FIELDS, columns));
+  assert.deepEqual(result.headers.slice(7, 10), ['Zotero · 摘要 [zotero:abstractNote]', 'Zotero · DOI [zotero:DOI]', 'Zotero · 出版社 [zotero:publisher]']);
+  assert.deepEqual(result.records[0].cells.slice(7, 10), ['\'=公式开头\n含逗号，和"引号"', '10.1234/example', '']);
+  assert.equal(result.headers.length, old.headers.length + columns.length);
+  assert.equal(result.records[0].cells[6], '标签');
+});

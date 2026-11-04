@@ -77,16 +77,39 @@
         if (typeof c.creatorTypeID === "number") return c.creatorTypeID === this.Z.CreatorTypes?.getID("author");
         return true;
       }) : [];
-      const names = (creators.length ? creators : paper.isRegularItem() ? paper.getCreators() : [])
+      const displayCreators = creators.length ? creators : paper.isRegularItem() ? paper.getCreators() : [];
+      const names = displayCreators
         .map(c => c.lastName || c.name || "").filter(Boolean);
       const authors = names.length > 2 ? `${names[0]} 等` : names.join("、");
       let citekey = field("citationKey");
       try { citekey ||= this.Z.BetterBibTeX?.KeyManager?.get(paper.id)?.citationKey || ""; } catch (_) {}
       citekey ||= (field("extra").match(/^Citation Key:\s*(\S+)/im) || [])[1] || paper.key;
       const year = (field("date").match(/\b(?:1|2)\d{3}\b/) || [])[0] || "";
+      const textField = name => {
+        try { const value = paper.getField(name); return value == null || value === false ? "" : String(value); }
+        catch (_) { return ""; }
+      };
+      const metadata = Object.fromEntries(["title", "date", "DOI", "url", "abstractNote", "volume", "issue", "pages",
+        "publisher", "place", "language", "ISBN", "ISSN", "accessDate", "dateAdded", "dateModified", "extra", "citationKey"]
+        .map(name => [name, textField(name)]));
+      metadata.creators = displayCreators.map(creator => {
+        if (creator.name) return String(creator.name);
+        if (creator.fieldMode === 1) return String(creator.lastName || creator.firstName || "");
+        return [creator.firstName, creator.lastName].filter(Boolean).map(String).join(" ");
+      }).filter(Boolean).join("、");
+      metadata.year = year;
+      metadata.citationKey = String(citekey ?? "");
+      metadata.publicationTitle = ["publicationTitle", "proceedingsTitle", "bookTitle", "websiteTitle"]
+        .map(textField).find(value => value.trim()) || "";
+      metadata.itemType = "";
+      for (const getType of [() => this.Z.ItemTypes?.getLocalizedString?.(paper.itemTypeID),
+        () => this.Z.ItemTypes?.getName?.(paper.itemTypeID), () => paper.itemType]) {
+        try { const value = getType(); if (value) { metadata.itemType = String(value); break; } }
+        catch (_) { /* Item type helpers vary between Zotero versions. */ }
+      }
       return { id: paper.id, key: paper.key, libraryID: paper.libraryID,
         title: (paper.getDisplayTitle ? paper.getDisplayTitle() : field("title")) || "未命名文献",
-        authors, year, citekey, tags: paper.getTags().map(t => t.tag),
+        authors, year, citekey, tags: paper.getTags().map(t => t.tag), metadata,
         itemURL: this.C.itemLink(library, paper.key),
         editable: !!library.editable && paper.isRegularItem(), paper };
     }

@@ -229,7 +229,7 @@
       const hasAnalysis = active.some(f => (r.values[f.id] || "").trim());
       if (state === "filled" && !hasAnalysis) return false;
       if (state === "empty" && hasAnalysis) return false;
-      const text = [r.title, r.authors, r.year, r.citekey, ...(r.tags || []),
+      const text = [r.title, r.authors, r.year, r.citekey, ...(r.tags || []), ...Object.values(r.metadata || {}),
         ...active.map(f => r.values[f.id] || ""), ...(r.annotations || []).map(a => `${a.text} ${a.comment}`)].join("\n").toLowerCase();
       return terms.every(t => text.includes(t));
     });
@@ -240,12 +240,13 @@
     if (/^[\s\uFEFF]*[=+@-]/u.test(text)) text = "'" + text;
     return `"${text.replace(/"/g, '""')}"`;
   }
-  function toCSV(rows, projectName, projectKey, fields = FIELDS) {
+  function toCSV(rows, projectName, projectKey, fields = FIELDS, metadataColumns = []) {
     const active = fields.filter(f => !f.archived);
-    const header = ["项目", "项目标识", "作者", "年份", "标题", "引用键", "标签", ...active.map(f => f.label),
+    const header = ["项目", "项目标识", "作者", "年份", "标题", "引用键", "标签",
+      ...metadataColumns.map(column => `Zotero · ${column.label} [zotero:${column.id}]`), ...active.map(f => f.label),
       "批注数量", "项目笔记链接", "文献链接", "原文链接"];
     const data = rows.map(r => [projectName, projectKey, r.authors, r.year, r.title, r.citekey,
-      (r.tags || []).join("; "), ...active.map(f => r.values[f.id] || ""),
+      (r.tags || []).join("; "), ...metadataColumns.map(column => r.metadata?.[column.id] || ""), ...active.map(f => r.values[f.id] || ""),
       r.annotations.length, r.noteURL || "", r.itemURL, r.pdfURL]);
     return "\uFEFF" + [header, ...data].map(row => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
   }

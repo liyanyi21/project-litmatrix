@@ -43,6 +43,9 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 .analysis-cell { cursor:text; white-space:pre-wrap; overflow-wrap:anywhere; }
 .analysis-cell:hover { box-shadow:inset 0 0 0 1px var(--accent); }
 .cell-text { max-height:250px; overflow:auto; scrollbar-width:thin; }
+.metadata-text { white-space:pre-wrap; overflow-wrap:anywhere; max-height:250px; overflow:auto; scrollbar-width:thin; }
+.metadata-source { display:block; color:var(--muted); font-size:10px; font-weight:400; margin-top:4px; }
+.metadata-cell { background:var(--soft); }
 .placeholder { color:var(--muted); font-size:13px; }
 .error { color:var(--danger); font-size:12px; white-space:pre-wrap; }
 #empty { text-align:center; padding:70px 20px; color:var(--muted); }

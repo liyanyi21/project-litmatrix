@@ -108,6 +108,122 @@ test('all collection papers appear without annotations, with recursive deduplica
   assert.equal(rows[0].annotations.length, 0);
   assert.equal(rows[0].title, '未批注文献');
   assert.equal(rows[0].editable, true);
+  assert.equal(rows[0].metadata.title, '未批注文献');
+  assert.equal(rows[0].metadata.citationKey, rows[0].citekey);
+});
+
+test('item metadata exposes full author names and raw string fields without changing existing row summaries or source data', () => {
+  const f = fixture();
+  const fields = { title: '<img src=x onerror=alert(1)> 原始标题', date: '2024-05-06', publicationTitle: '期刊原名',
+    proceedingsTitle: '会议来源', bookTitle: '图书来源', websiteTitle: '网站来源', DOI: '10.0000/fixture',
+    url: 'javascript:fixture-is-only-text', abstractNote: '<b>摘要原文</b>\n第二行', volume: 0, issue: 2, pages: '1–9',
+    publisher: '测试出版社', place: '测试地点', language: 'zh-CN', ISBN: 'fixture-isbn', ISSN: 'fixture-issn',
+    accessDate: '2026-11-04 08:00:00', dateAdded: '2026-01-02 03:04:05', dateModified: '2026-02-03 04:05:06',
+    extra: '保留额外原文\n第二行', citationKey: 'Fixture2024' };
+  const before = JSON.stringify(fields);
+  f.parent.getField = name => fields[name];
+  f.parent.getDisplayTitle = () => '已有展示标题';
+  f.parent.getCreators = () => [
+    { firstName: 'Ada', lastName: 'Lovelace', creatorType: 'author' },
+    { name: '中文研究机构', creatorTypeID: 1 },
+    { firstName: '不应重复', lastName: '张三', fieldMode: 1, creatorType: 'author' },
+    { firstName: 'Editor', lastName: 'Excluded', creatorType: 'editor' },
+  ];
+  f.parent.tags = ['原有标签'];
+  f.parent.itemTypeID = 2;
+  f.Z.ItemTypes = { getLocalizedString: id => { assert.equal(id, 2); return '期刊文章'; }, getName: () => 'journalArticle' };
+  f.parent.setField = f.parent.setNote = f.parent.save = () => { throw new Error('metadata must never write'); };
+  const row = f.repo.info(f.parent, f.library);
+  assert.equal(row.title, '已有展示标题');
+  assert.equal(row.authors, 'Lovelace 等');
+  assert.equal(row.year, '2024');
+  assert.equal(row.citekey, 'Fixture2024');
+  assert.deepEqual(row.tags, ['原有标签']);
+  assert.equal(row.metadata.creators, 'Ada Lovelace、中文研究机构、张三');
+  assert.equal(row.metadata.itemType, '期刊文章');
+  assert.equal(row.metadata.publicationTitle, '期刊原名');
+  assert.equal(row.metadata.year, '2024');
+  for (const [name, value] of Object.entries(fields)) {
+    if (['proceedingsTitle', 'bookTitle', 'websiteTitle'].includes(name)) continue;
+    assert.equal(row.metadata[name], String(value), name);
+  }
+  assert.ok(Object.values(row.metadata).every(value => typeof value === 'string'));
+  assert.equal(JSON.stringify(fields), before);
+  assert.equal(f.parent.notes.length, 0);
+});
+
+test('publication metadata falls back across journal, proceedings, book and website item types', () => {
+  for (const [itemType, source, expected] of [
+    ['journalArticle', { publicationTitle: 'Synthetic Journal', proceedingsTitle: 'ignored' }, 'Synthetic Journal'],
+    ['conferencePaper', { publicationTitle: '  ', proceedingsTitle: 'Synthetic Conference', bookTitle: 'ignored' }, 'Synthetic Conference'],
+    ['bookSection', { bookTitle: '测试图书' }, '测试图书'],
+    ['webpage', { websiteTitle: '测试网站' }, '测试网站'],
+    ['report', {}, ''],
+  ]) {
+    const f = fixture();
+    f.parent.itemType = itemType;
+    f.parent.getField = name => source[name] || '';
+    f.parent.getCreators = () => [];
+    const row = f.repo.info(f.parent, f.library);
+    assert.equal(row.metadata.publicationTitle, expected, itemType);
+    assert.equal(row.metadata.itemType, itemType);
+    assert.equal(row.metadata.creators, '');
+  }
+});
+
+test('metadata uses all creators only when no author exists and supports institutional and single-field Chinese names', () => {
+  const f = fixture();
+  f.parent.getCreators = () => [
+    { firstName: 'Grace Brewster', lastName: 'Hopper', creatorType: 'editor' },
+    { name: '中文单字段姓名', creatorType: 'translator' },
+    { lastName: '测试机构', fieldMode: 1, creatorType: 'editor' },
+  ];
+  const row = f.repo.info(f.parent, f.library);
+  assert.equal(row.metadata.creators, 'Grace Brewster Hopper、中文单字段姓名、测试机构');
+  assert.equal(row.authors, 'Hopper 等', 'the existing abbreviated author display stays compatible');
+});
+
+test('metadata tolerates missing or unsupported fields and item type helpers and always returns the agreed keys as strings', () => {
+  const f = fixture();
+  f.parent.getField = () => { throw new Error('unsupported item field'); };
+  f.parent.getDisplayTitle = () => '';
+  f.parent.getCreators = () => [];
+  f.Z.ItemTypes = { getLocalizedString: () => { throw new Error('no localization'); }, getName: () => 'book' };
+  let row = f.repo.info(f.parent, f.library);
+  assert.equal(row.metadata.itemType, 'book');
+  f.Z.ItemTypes.getName = () => { throw new Error('unknown item type'); };
+  f.parent.itemType = 'fallbackType';
+  assert.equal(f.repo.info(f.parent, f.library).metadata.itemType, 'fallbackType');
+  delete f.parent.itemType;
+  row = f.repo.info(f.parent, f.library);
+  const expectedKeys = ['title', 'creators', 'year', 'date', 'publicationTitle', 'itemType', 'DOI', 'url', 'abstractNote',
+    'volume', 'issue', 'pages', 'publisher', 'place', 'language', 'ISBN', 'ISSN', 'accessDate', 'dateAdded', 'dateModified',
+    'extra', 'citationKey'];
+  assert.deepEqual(Object.keys(row.metadata).sort(), expectedKeys.sort());
+  for (const [name, value] of Object.entries(row.metadata)) assert.equal(value, name === 'citationKey' ? f.parent.key : '', name);
+});
+
+test('metadata citation keys match existing field, Better BibTeX, Extra and item-key resolution', () => {
+  const f = fixture();
+  f.parent.getField = name => name === 'extra' ? 'Citation Key: FixtureExtra2026' : '';
+  f.Z.BetterBibTeX = { KeyManager: { get: () => ({ citationKey: 'FixtureBBT2026' }) } };
+  assert.equal(f.repo.info(f.parent, f.library).metadata.citationKey, 'FixtureBBT2026');
+  f.Z.BetterBibTeX.KeyManager.get = () => { throw new Error('no Better BibTeX key'); };
+  assert.equal(f.repo.info(f.parent, f.library).metadata.citationKey, 'FixtureExtra2026');
+  f.parent.getField = () => '';
+  assert.equal(f.repo.info(f.parent, f.library).metadata.citationKey, f.parent.key);
+});
+
+test('standalone attachment metadata remains read-only and does not request creator data', () => {
+  const f = fixture();
+  const attachment = new f.Item('attachment');
+  attachment.itemType = 'attachment';
+  attachment.getCreators = () => { throw new Error('attachment has no creators'); };
+  const row = f.repo.info(attachment, f.library);
+  assert.equal(row.editable, false);
+  assert.equal(row.metadata.creators, '');
+  assert.equal(row.metadata.itemType, 'attachment');
+  assert.ok(Object.values(row.metadata).every(value => typeof value === 'string'));
 });
 test('unchanged empty edit never creates an empty note', async () => {
   const f = fixture();
