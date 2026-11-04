@@ -1,4 +1,4 @@
-ResearchGrid / 研矩 v0.9.0
+ResearchGrid / 研矩 v0.9.1
 Copyright (c) 2026 liyanyi (project modifications)
 
 Based on LitMatrix 1.1.0 by bapungiri:
@@ -16,7 +16,7 @@ The legacy add-on ID and data identifiers remain unchanged for upgrades.
 
 This work is licensed under GNU AGPL version 3 or (at your option) any later
 version. See LICENSE. Corresponding source is supplied in the adjacent
-research-grid-0.9.0-source.zip and in this project directory.
+research-grid-0.9.1-source.zip and in this project directory.
 There is no automatic update endpoint. AI API requests are sent only when explicitly initiated by the user, to the user-configured endpoint.
 
 CSV/TSV blank templates, parsing, identity matching, import preview and
@@ -42,3 +42,6 @@ draggable branches and persistent local layouts were added on 2026-11-04.
 The mind-map interactions were informed by Better Notes (windingwind),
 https://github.com/windingwind/zotero-better-notes . Its GoJS distribution
 and source code are not included in this plugin.
+
+Highlight saving now patches the affected cell and retains reading offsets
+during background Zotero refreshes (2026-11-04).

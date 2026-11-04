@@ -105,6 +105,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
       return { records: operations.map((operation, index) => ({ row: operation.row,
         note: { key: 'TBLNOTE' + (index + 1) }, values: { ...operation.row.values, ...operation.changes } })) };
     } };
+  let notifier;
   const Z = { Prefs: { get: key => JSON.stringify(key === 'extensions.researchgrid.ai' ? aiConfig : preferences),
     set: (key, value) => { if (key === 'extensions.researchgrid.ai') aiConfig = JSON.parse(value); else preferences = JSON.parse(value); } },
     ProjectLitMatrix: { credentials: { getKey: async endpoint => { keyCalls.push(endpoint); return keyProvider(endpoint); } },
@@ -115,7 +116,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
       async getContentsAsync(path, charset, length) { fileReads.push({ path, charset, length }); return files.get(path).text; },
       async putContentsAsync(path, text) { fileWrites.push({ path, text }); },
     },
-    Notifier: { registerObserver() { return 1; }, unregisterObserver() {} }, logError: error => logs.push(error) };
+    Notifier: { registerObserver(observer) { notifier = observer; return 1; }, unregisterObserver() {} }, logError: error => logs.push(error) };
   const timers = new Set();
   const context = vm.createContext({ window, document, Node: window.Node, ChromeUtils: {
     importESModule: url => url.includes('filePicker.mjs') ? { FilePicker } : { Zotero: Z } },
@@ -180,6 +181,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
     await settle();
   };
   return { document, window, context, repo, projects, row, rowB, loads, saves, logs, run, cell, click, dblclick, key, input,
+    notify: () => notifier.notify('modify', 'item', [1], {}),
     sourceCalls, apiCalls, keyCalls, batchSaves, importSaves, pickerCalls, fileReads, fileWrites, queueFile,
     setAIConfig: value => { aiConfig = clone(value); },
     aiConfig: () => clone(aiConfig), keyProvider: fn => { keyProvider = fn; }, settingsOpened: () => settingsOpened,
@@ -1804,5 +1806,132 @@ test('existing highlights survive textarea edits and a popup roundtrip without e
     assert.deepEqual(f.saves[0].options.expectedHighlights, originalHighlights);
     assert.equal(f.row.values.remarks, changed);
     assert.equal(f.cell('remarks').querySelector('[data-rg-highlight="pink"]').textContent, '需要标记');
+  } finally { f.cleanup(); }
+});
+
+// A real browser clamps scroll offsets when the last table rows disappear.
+// Model that behavior, which LinkeDOM's plain scrollTop properties omit.
+function readingOffsets(f, top = 1400, left = 800) {
+  const results = f.document.querySelector('#results');
+  let y = top, x = left;
+  const hasRows = () => f.document.querySelectorAll('.matrix-table tbody tr').length > 0;
+  Object.defineProperties(results, {
+    scrollTop: { configurable: true, get() { if (!hasRows()) y = 0; return y; }, set(value) { y = hasRows() ? value : 0; } },
+    scrollLeft: { configurable: true, get() { if (!hasRows()) x = 0; return x; }, set(value) { x = hasRows() ? value : 0; } },
+  });
+  return results;
+}
+
+test('highlighting and clearing update only their cell and preserve outer and inner reading offsets', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '关键结果。第二句。';
+    f.row.values.findings = '另一列的分析';
+    f.run('render()');
+    const results = readingOffsets(f);
+    const text = f.cell('remarks').querySelector('.cell-text'), other = f.cell('findings');
+    text.scrollTop = 130; text.scrollLeft = 25;
+    other.querySelector('.cell-text').scrollTop = 72;
+    for (const color of ['yellow', null]) {
+      assert.equal(f.run(`highlightManager.capture({element:document.querySelector('td[data-field="remarks"] .cell-text'),start:0,end:4})`), true);
+      await f.run(`highlightManager.apply(${JSON.stringify(color)})`);
+      assert.equal(f.cell('remarks').querySelector('.cell-text'), text, 'keep the original scrollable text container');
+      assert.equal(f.cell('findings'), other, 'do not replace unrelated columns or focus targets');
+      assert.equal(results.scrollTop, 1400);
+      assert.equal(results.scrollLeft, 800);
+      assert.equal(text.scrollTop, 130);
+      assert.equal(text.scrollLeft, 25);
+      assert.equal(other.querySelector('.cell-text').scrollTop, 72);
+    }
+    assert.equal(text.querySelector('[data-rg-highlight]'), null);
+    assert.equal(f.saves.length, 2);
+    assert.equal(f.loads.length, 1, 'a local highlight must not force an immediate project load');
+  } finally { f.cleanup(); }
+});
+
+test('the delayed Zotero notification after a highlight preserves page and cell reading positions', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '关键结果。第二句。';
+    f.run('render()');
+    const results = readingOffsets(f, 1800, 960), text = f.cell('remarks').querySelector('.cell-text');
+    text.scrollTop = 95;
+    const saveField = f.repo.saveField;
+    f.repo.saveField = async (...args) => { f.notify(); return saveField(...args); };
+    assert.equal(f.run(`highlightManager.capture({element:document.querySelector('td[data-field="remarks"] .cell-text'),start:0,end:4})`), true);
+    assert.equal(await f.run('highlightManager.apply("green")'), true);
+    assert.equal(f.cell('remarks').querySelector('.cell-text'), text);
+    await new Promise(resolve => setTimeout(resolve, 720));
+    await settle();
+    assert.equal(f.loads.length, 2, 'keep real Zotero notifications instead of dropping external changes');
+    assert.equal(results.scrollTop, 1800, 'never collapse the table between notification and refreshed data');
+    assert.equal(results.scrollLeft, 960);
+    assert.equal(f.cell('remarks').querySelector('.cell-text').scrollTop, 95);
+    assert.equal(f.cell('remarks').querySelector('[data-rg-highlight="green"]').textContent, '关键结果');
+    assert.equal(f.run('state.pendingReload'), false);
+  } finally { f.cleanup(); }
+});
+
+test('background refresh keeps rows visible and preserves the latest reading position while data arrives', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '长分析内容';
+    f.run('render()');
+    const results = readingOffsets(f, 2000, 900), cell = f.cell('remarks');
+    let finish;
+    f.repo.loadProject = () => new Promise(resolve => { finish = resolve; });
+    const pending = f.run('reload()');
+    assert.equal(f.run('state.loading'), true);
+    assert.equal(f.cell('remarks'), cell);
+    assert.equal(f.document.querySelector('#grid').hidden, false);
+    assert.equal(await f.run('openEditor(state.rows[0], activeFields().find(f=>f.id==="remarks"))'), false,
+      'do not open a draft that could be replaced by the incoming refresh');
+    results.scrollTop = 1630; results.scrollLeft = 1100;
+    cell.querySelector('.cell-text').scrollTop = 120;
+    f.row.values.remarks = '外部更新后的分析';
+    finish([f.row]); await pending;
+    assert.equal(results.scrollTop, 1630, 'use the latest position, not the position before the network/database wait');
+    assert.equal(results.scrollLeft, 1100);
+    assert.equal(f.cell('remarks').querySelector('.cell-text').scrollTop, 120);
+    assert.match(f.cell('remarks').textContent, /外部更新后的分析/);
+    assert.equal(f.run('state.loading'), false);
+  } finally { f.cleanup(); }
+});
+
+test('a changed project selection still clears the previous project during loading', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '甲项目分析不能显示在乙项目下';
+    f.run('render()');
+    let finish;
+    f.repo.loadProject = () => new Promise(resolve => { finish = resolve; });
+    const pending = f.run(`selectProject('${PROJECT_B}')`);
+    assert.equal(f.run('state.loading'), true);
+    assert.equal(f.document.querySelector('#grid tbody').children.length, 0);
+    assert.equal(f.document.querySelector('#grid').hidden, true);
+    assert.equal(f.document.querySelector('#results').textContent.includes('甲项目分析不能显示在乙项目下'), false);
+    finish([f.rowB]); await pending;
+    assert.equal(f.run('state.project.id'), PROJECT_B);
+  } finally { f.cleanup(); }
+});
+
+test('highlight patches preserve separate reading containers for the same paper in two projects', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values.remarks = '甲项目独立备注'; f.rowB.values.remarks = '乙项目独立备注';
+    await selectBothProjects(f);
+    const a = projectCell(f, PROJECT_A, 'remarks'), b = projectCell(f, PROJECT_B, 'remarks');
+    const aText = a.querySelector('.cell-text'), bText = b.querySelector('.cell-text');
+    aText.scrollTop = 77; bText.scrollTop = 123;
+    const results = readingOffsets(f, 3400, 1020);
+    assert.equal(f.run(`highlightManager.capture({element:document.querySelector('[data-project-group="${PROJECT_B}"] td[data-field="remarks"] .cell-text'),start:0,end:3})`), true);
+    assert.equal(await f.run('highlightManager.apply("pink")'), true);
+    assert.equal(projectCell(f, PROJECT_A, 'remarks'), a);
+    assert.equal(projectCell(f, PROJECT_B, 'remarks'), b);
+    assert.equal(aText.querySelector('[data-rg-highlight]'), null);
+    assert.equal(bText.querySelector('[data-rg-highlight="pink"]').textContent, '乙项目');
+    assert.equal(aText.scrollTop, 77); assert.equal(bText.scrollTop, 123);
+    assert.equal(results.scrollTop, 3400); assert.equal(results.scrollLeft, 1020);
+    assert.equal(f.saves[0].projectID, PROJECT_B);
   } finally { f.cleanup(); }
 });

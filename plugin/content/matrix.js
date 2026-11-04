@@ -198,6 +198,34 @@ function updateSavedRecord(project, record) {
     target.noteURL = target.noteKey ? C.itemLink(project.library, target.noteKey) : "";
   }
 }
+function readingPosition() {
+  const results = $("#results"), cells = new Map();
+  for (const element of document.querySelectorAll(".matrix-table .cell-text, .matrix-table .metadata-text")) {
+    if (!element.scrollTop && !element.scrollLeft) continue;
+    const cell = element.closest("td"), table = element.closest("table");
+    const key = JSON.stringify([table.dataset.widthProject, cell.dataset.row, cell.dataset.field || `metadata:${cell.dataset.metadata}`]);
+    cells.set(key, { top: element.scrollTop, left: element.scrollLeft });
+  }
+  return { top: results.scrollTop, left: results.scrollLeft, cells };
+}
+function restoreReadingPosition(position) {
+  for (const element of document.querySelectorAll(".matrix-table .cell-text, .matrix-table .metadata-text")) {
+    const cell = element.closest("td"), table = element.closest("table");
+    const key = JSON.stringify([table.dataset.widthProject, cell.dataset.row, cell.dataset.field || `metadata:${cell.dataset.metadata}`]);
+    const saved = position.cells.get(key);
+    if (saved) { element.scrollTop = saved.top; element.scrollLeft = saved.left; }
+  }
+  $("#results").scrollTop = position.top;
+  $("#results").scrollLeft = position.left;
+}
+function updateHighlightCell(row, fieldID) {
+  const position = readingPosition();
+  for (const element of document.querySelectorAll(".matrix-table tbody .cell-text")) {
+    if (element.dataset.row !== rowKey(row) || element.dataset.field !== fieldID) continue;
+    element.replaceChildren(RGHighlights.render(document, row.values[fieldID] || "", row.highlights?.[fieldID] || []));
+  }
+  restoreReadingPosition(position);
+}
 const rowIdentity = row => `${row.projectID || state.project?.id || ""}|${row.libraryID}:${row.key}`;
 function selectedRows() { return state.rows.filter(row => state.selected.has(rowIdentity(row))); }
 function syncSelection() {
@@ -380,7 +408,7 @@ async function selectProjects(targets, options = {}) {
     }
   } catch (error) { state.projectIDs = previous.ids; state.project = previous.project; syncControls(); throw error; }
   if (changed) state.selected.clear();
-  highlightManager?.clear(); syncControls(); await reload(); return true;
+  highlightManager?.clear(); syncControls(); await reload({ reset: changed }); return true;
 }
 async function focusProject(id) {
   const project = state.projects.find(project => project.id === id && state.projectIDs.includes(id));
@@ -401,7 +429,7 @@ function renderProjectTabs() {
     h("button", { type: "button", "data-active-project": project.id, "aria-pressed": String(project.id === state.project?.id),
       title: project.label, onclick: safe(() => focusProject(project.id)) }, project.name)));
 }
-async function reload() {
+async function reload({ reset = false } = {}) {
   if (state.editing || state.saving || layoutBusy()) { state.pendingReload = true; return; }
   state.loadError = false;
   const generation = ++state.generation;
@@ -410,7 +438,9 @@ async function reload() {
     state.project = null; state.rows = []; state.pendingReload = false;
     setBusy(false); syncControls(); render(); return;
   }
-  state.pendingReload = false; setBusy(true); state.rows = []; render();
+  state.pendingReload = false; setBusy(true);
+  if (reset || !state.rows.length) { state.rows = []; render(); }
+  else $("#status").textContent = "正在更新项目文献、笔记和批注…";
   try {
     const projects = state.projectIDs.map(id => {
       const project = state.projects.find(project => project.id === id);
@@ -510,9 +540,10 @@ function renderTable(table, project, shown) {
 }
 function render() {
   if (state.editing) return;
+  const position = readingPosition();
   highlightManager?.clear();
   widthManager?.dispose();
-  const scroll = $("#results").scrollTop, p = prefs();
+  const p = prefs();
   const compare = (a, b) => {
     if (p.sort === "yearDesc" || p.sort === "yearAsc") {
       const diff = (Number(a.year) || 0) - (Number(b.year) || 0);
@@ -555,8 +586,8 @@ function render() {
   $("#empty").hidden = state.shown.length > 0;
   $("#empty").replaceChildren(h("h2", {}, state.loading ? "正在整理文献…" : !state.project ? "从一个研究项目开始" : state.rows.length ? "没有符合条件的文献" : "所选分类还没有文献"),
     h("p", {}, !state.project ? "点击研究项目，搜索并勾选需要的 Zotero 分类。" : state.rows.length ? "可以清空搜索或切换分析状态。" : "添加文献后点击刷新；子分类可通过上方开关包含。"));
-  $("#results").scrollTop = scroll;
   renderProjectTabs(); syncDisplayControls(); syncSelection(); syncView();
+  restoreReadingPosition(position);
 }
 function editorValue() {
   return state.editing?.mode === "inline" ? $("#inlineValue").value : $("#editValue").value;
@@ -582,7 +613,7 @@ function autoSizeInline() {
   input.style.height = `${Math.min(170, Math.max(70, input.scrollHeight || 70))}px`;
 }
 async function openEditor(row, field, mode = "inline") {
-  if (state.saving) return false;
+  if (state.saving || state.loading) return false;
   highlightManager?.clear();
   if (state.editing) {
     if (rowKey(state.editing.row) === rowKey(row) && state.editing.field.id === field.id) {
@@ -872,7 +903,7 @@ async function init() {
       try {
         const record = await repo.saveField({ ...project, fields: allFields(project) }, row, fieldID, value, expected, options);
         updateSavedRecord(project, { ...record, row });
-        render(); $("#saveStatus").textContent = "文字高亮已保存到项目笔记";
+        updateHighlightCell(row, fieldID); $("#saveStatus").textContent = "文字高亮已保存到项目笔记";
         return record;
       } finally { state.saving = false; if (state.pendingReload) scheduleReload(); }
     }, notify: toast,
