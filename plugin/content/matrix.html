@@ -6,26 +6,41 @@
   <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css"><link rel="stylesheet" href="display.css"><link rel="stylesheet" href="project-picker.css"><link rel="stylesheet" href="ai-dialog.css"><link rel="stylesheet" href="table-dialog.css"><link rel="stylesheet" href="ai-batch.css"><link rel="stylesheet" href="highlights.css"><link rel="stylesheet" href="column-widths.css"><link rel="stylesheet" href="mindmap.css">
 </head>
 <body>
-  <header>
-    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.9.1</span></div>
-    <div class="toolbar">
-      <div class="project-label">研究项目<button id="project" class="project-choice" type="button" aria-label="选择研究项目分类" aria-haspopup="dialog" aria-controls="projectPickerDialog">选择 Zotero 分类…</button></div>
-      <button id="current">使用 Zotero 所选分类</button>
-      <label class="check"><input id="recursive" type="checkbox" checked>包含子分类</label>
-      <label class="check"><input id="showTags" type="checkbox" checked>显示标签</label>
+  <header class="compact-header">
+    <div class="mainbar">
+      <h1>研矩</h1>
+      <button id="project" class="project-choice" type="button" aria-label="选择研究项目分类" aria-haspopup="dialog" aria-controls="projectPickerDialog">选择 Zotero 分类…</button>
+      <div class="view-switch" role="group" aria-label="切换文献视图"><button id="viewTable" type="button" aria-pressed="true">文献表格</button><button id="viewMindmap" type="button" aria-pressed="false">思维导图</button></div>
       <span class="spacer"></span>
-      <button id="columns">项目字段与模板</button><button id="displayOptions">显示选项</button><button id="refresh">刷新</button><button id="export" disabled>导出已填 CSV</button><button id="exportTemplate" disabled>导出待填模板</button><button id="importTable" class="primary" disabled>导入表格</button>
+      <button id="toggleFilters" type="button" aria-expanded="false" aria-controls="filtersPanel">筛选</button>
+      <button id="toggleActions" type="button" aria-expanded="false" aria-controls="actionsPanel">项目与显示</button>
+      <button id="toggleBatch" type="button" aria-expanded="false" aria-controls="batchPanel">批量操作</button>
+      <button id="refresh" type="button">刷新</button><span class="version">0.9.2</span>
     </div>
-    <div class="searchbar"><input id="search" type="search" placeholder="搜索文献、分析和批注，可组合多个关键词…" aria-label="搜索文献矩阵">
-      <select id="analysisState" aria-label="分析状态"><option value="all">全部文献</option><option value="filled">已填写分析</option><option value="empty">尚未填写</option></select>
-      <select id="sort" aria-label="文献排序"><option value="title">按标题</option><option value="yearDesc">年份：新到旧</option><option value="yearAsc">年份：旧到新</option><option value="author">按作者</option></select>
-    </div>
-    <p id="projectHint" class="hint">在 Zotero 中选择分类，再点击“使用 Zotero 所选分类”。每个分类的分析与备注独立保存。</p>
+    <section id="filtersPanel" class="toolbar-panel" aria-label="搜索与筛选" hidden>
+      <div class="searchbar"><input id="search" type="search" placeholder="搜索文献、分析和批注，可组合多个关键词…" aria-label="搜索文献矩阵">
+        <select id="analysisState" aria-label="分析状态"><option value="all">全部文献</option><option value="filled">已填写分析</option><option value="empty">尚未填写</option></select>
+        <select id="sort" aria-label="文献排序"><option value="title">按标题</option><option value="yearDesc">年份：新到旧</option><option value="yearAsc">年份：旧到新</option><option value="author">按作者</option></select>
+        <button id="clearFilters" type="button">清除筛选</button>
+      </div>
+    </section>
+    <section id="actionsPanel" class="toolbar-panel" aria-label="项目、显示与导入导出" hidden>
+      <div class="toolbar">
+        <button id="current">使用 Zotero 所选分类</button>
+        <label class="check"><input id="recursive" type="checkbox" checked>包含子分类</label>
+        <label class="check"><input id="showTags" type="checkbox" checked>显示标签</label>
+        <label class="check"><input id="showFieldGuidance" type="checkbox">表头显示填写要求</label>
+        <button id="columns">项目字段与模板</button><button id="displayOptions">显示选项</button><button id="resetWidths" type="button">恢复当前项目列宽</button>
+        <button id="export" disabled>导出已填 CSV</button><button id="exportTemplate" disabled>导出待填模板</button><button id="importTable" class="primary" disabled>导入表格</button>
+      </div>
+      <p id="projectHint" class="hint">在 Zotero 中选择分类，再点击“使用 Zotero 所选分类”。每个分类的分析与备注独立保存。</p>
+      <p id="viewHint" class="hint">拖动表头右边缘调节列宽 · 双击边缘恢复默认</p>
+    </section>
+    <section id="batchPanel" class="toolbar-panel" aria-label="批量选择与 AI 总结" hidden>
+      <div class="selectionbar"><span id="selectionCount" role="status">已选 0 篇</span><button id="selectShown">全选当前筛选</button><button id="selectZotero">勾选 Zotero 中所选</button><button id="clearSelection" disabled>清空选择</button><button id="batchAI" class="primary" disabled>批量 AI 总结（0）</button><span class="hint">双击编辑 · 划选文字后点颜色直接高亮</span></div>
+    </section>
   </header>
-  <div id="projectTabs" class="project-tabs" hidden></div>
-  <div class="viewbar"><div class="view-switch" role="group" aria-label="切换文献视图"><button id="viewTable" type="button" aria-pressed="true">文献表格</button><button id="viewMindmap" type="button" aria-pressed="false">思维导图</button></div><button id="resetWidths" type="button">恢复当前项目列宽</button><span id="viewHint" class="hint">拖动表头右边缘调节列宽 · 双击边缘恢复默认</span></div>
-  <div class="selectionbar"><span id="selectionCount" role="status">已选 0 篇</span><button id="selectShown">全选当前筛选</button><button id="selectZotero">勾选 Zotero 中所选</button><button id="clearSelection" disabled>清空选择</button><button id="batchAI" class="primary" disabled>批量 AI 总结（0）</button><span class="hint">双击编辑 · 划选文字后点颜色直接高亮</span></div>
-  <div class="statusline"><span id="status" role="status" aria-live="polite">请选择研究项目</span><span id="saveStatus"></span></div>
+  <div class="contextbar"><div id="projectTabs" class="project-tabs" hidden></div><div class="statusline"><span id="status" role="status" aria-live="polite">请选择研究项目</span><span id="saveStatus"></span></div></div>
   <main id="results"><div id="matrixView"><table id="grid" class="matrix-table" hidden><colgroup></colgroup><thead></thead><tbody></tbody></table>
     <div id="projectGroups" hidden></div>
     <div id="empty"><h2>从一个研究项目开始</h2><p>选择分类后，所有文献都会出现在这里，包括没有高亮或批注的文献。</p></div>

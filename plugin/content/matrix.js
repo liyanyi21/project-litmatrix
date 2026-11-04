@@ -57,6 +57,34 @@ function saveProjectPrefs(project, patch = {}) {
   const owner = state.projects.find(candidate => candidate.id === project.id);
   if (owner) owner.fields = allFields(owner);
 }
+const chromePanels = { filtersOpen: ["toggleFilters", "filtersPanel"], actionsOpen: ["toggleActions", "actionsPanel"], batchOpen: ["toggleBatch", "batchPanel"] };
+function chromePrefs() {
+  const saved = state.preferences.uiChrome || {};
+  return Object.fromEntries([...Object.keys(chromePanels), "showFieldGuidance"].map(key => [key, saved[key] === true]));
+}
+function syncFilterBadge() {
+  const count = [$("#search").value.trim(), ($("#analysisState").value || "all") !== "all", ($("#sort").value || "title") !== "title"].filter(Boolean).length;
+  $("#toggleFilters").textContent = count ? `筛选 · ${count} 项` : "筛选";
+  $("#toggleFilters").dataset.active = String(count > 0);
+  $("#toggleFilters").title = count ? "已启用搜索、分析状态或排序条件，展开可查看或清除" : "展开搜索、分析状态和排序";
+  $("#clearFilters").disabled = !count;
+}
+function syncChrome() {
+  const settings = chromePrefs();
+  for (const [key, [button, panel]] of Object.entries(chromePanels)) {
+    $("#" + panel).hidden = !settings[key];
+    $("#" + button).setAttribute("aria-expanded", String(settings[key]));
+  }
+  $("#showFieldGuidance").checked = settings.showFieldGuidance;
+  $("#results").classList.toggle("show-field-guidance", settings.showFieldGuidance);
+  syncFilterBadge();
+}
+function saveChrome(patch) {
+  const position = readingPosition();
+  const next = { ...state.preferences, uiChrome: { ...chromePrefs(), ...patch } };
+  Z.Prefs.set(PREF, JSON.stringify(next), true); state.preferences = next;
+  syncChrome(); restoreReadingPosition(position);
+}
 let fieldManager;
 let displayManager;
 let projectPicker;
@@ -233,6 +261,8 @@ function syncSelection() {
   const shown = new Set((state.view === "mindmap" ? activeRows(state.shown) : state.shown).map(rowIdentity));
   const hidden = rows.filter(row => !shown.has(rowIdentity(row))).length;
   $("#selectionCount").textContent = `已选 ${rows.length} 篇${hidden ? `（当前筛选外 ${hidden} 篇）` : ""}`;
+  $("#toggleBatch").textContent = rows.length ? `批量操作 · ${rows.length} 篇` : "批量操作";
+  $("#toggleBatch").dataset.active = String(rows.length > 0);
   const activeSelected = activeRows(rows);
   $("#batchAI").textContent = state.projectIDs.length > 1
     ? `批量 AI · ${state.project?.name || "当前项目"}（${activeSelected.length}）` : `批量 AI 总结（${rows.length}）`;
@@ -365,7 +395,7 @@ function syncControls() {
     ? state.projectIDs.length > 1 ? `已选 ${state.projectIDs.length} 个分类，按项目分区保留分析。当前操作：${state.project.name}；字段、显示、批量 AI 与导入导出针对当前操作项目。`
       : `${state.project.label} · 分析与备注只属于此项目${state.project.library.editable ? "" : " · 此文献库为只读"}`
     : "在 Zotero 中选择分类，再点击“使用 Zotero 所选分类”。每个分类的分析与备注独立保存。";
-  syncDisplayControls();
+  syncDisplayControls(); syncChrome();
 }
 function selectionLocked(ids, { fromPicker = false } = {}) {
   const unchanged = JSON.stringify(ids) === JSON.stringify(state.projectIDs);
@@ -573,7 +603,7 @@ function render() {
       const table = h("table", { class: "matrix-table" }, h("colgroup"), h("thead"), h("tbody"));
       renderTable(table, project, rows);
       return h("section", { class: "project-group", "data-project-group": project.id },
-        h("div", { class: "project-group-heading" }, h("div", {}, h("h2", {}, project.name),
+        h("div", { class: "project-group-heading" }, h("div", {}, h("h2", { title: project.label }, project.name),
           h("p", { class: "hint" }, `${project.label} · ${rows.length} 条项目记录`)),
           h("button", { type: "button", "data-focus-project": project.id, disabled: project.id === state.project?.id,
             onclick: safe(() => focusProject(project.id)) }, project.id === state.project?.id ? "当前操作项目" : "设为当前操作项目")),
@@ -586,7 +616,7 @@ function render() {
   $("#empty").hidden = state.shown.length > 0;
   $("#empty").replaceChildren(h("h2", {}, state.loading ? "正在整理文献…" : !state.project ? "从一个研究项目开始" : state.rows.length ? "没有符合条件的文献" : "所选分类还没有文献"),
     h("p", {}, !state.project ? "点击研究项目，搜索并勾选需要的 Zotero 分类。" : state.rows.length ? "可以清空搜索或切换分析状态。" : "添加文献后点击刷新；子分类可通过上方开关包含。"));
-  renderProjectTabs(); syncDisplayControls(); syncSelection(); syncView();
+  renderProjectTabs(); syncDisplayControls(); syncSelection(); syncView(); syncChrome();
   restoreReadingPosition(position);
 }
 function editorValue() {
@@ -870,6 +900,7 @@ function scheduleReload() {
 async function init() {
   if (!Z) throw new Error("无法连接 Zotero，请从 Zotero 工具菜单打开插件。");
   readPrefs(); refreshChoices();
+  syncChrome();
   state.view = state.preferences.viewMode === "mindmap" ? "mindmap" : "table";
   widthManager = new RGColumnWidths.Manager({ document, notify: toast });
   mindmapManager = new RGMindmap.Manager({
@@ -893,6 +924,16 @@ async function init() {
   $("#viewTable").addEventListener("click", safe(() => setView("table")));
   $("#viewMindmap").addEventListener("click", safe(() => setView("mindmap")));
   $("#resetWidths").addEventListener("click", safe(resetColumnWidths));
+  for (const [key, [button]] of Object.entries(chromePanels)) {
+    $("#" + button).addEventListener("click", safe(() => saveChrome({ [key]: !chromePrefs()[key] })));
+  }
+  $("#showFieldGuidance").addEventListener("change", safe(() => {
+    try { saveChrome({ showFieldGuidance: $("#showFieldGuidance").checked }); } finally { syncChrome(); }
+  }));
+  $("#clearFilters").addEventListener("click", safe(() => {
+    $("#search").value = ""; $("#analysisState").value = "all"; $("#sort").value = "title";
+    savePrefs({ search: "", analysisState: "all", sort: "title" }); syncFilterBadge(); render();
+  }));
   highlightManager = new RGHighlights.Manager({
     document, getProject: () => state.project, getProjectForRow: ownerProject,
     getFields: row => activeFields(ownerProject(row)), getRowID: rowKey, getRows: () => state.rows,
@@ -932,9 +973,9 @@ async function init() {
   $("#showTags").addEventListener("change", toggleTags);
   $("#annotationsClose").addEventListener("click", () => $("#annotationsDialog").close());
   let searchTimer;
-  $("#search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { savePrefs({ search: $("#search").value }); render(); }, 150); });
-  $("#analysisState").addEventListener("change", () => { savePrefs({ analysisState: $("#analysisState").value }); render(); });
-  $("#sort").addEventListener("change", () => { savePrefs({ sort: $("#sort").value }); render(); });
+  $("#search").addEventListener("input", () => { syncFilterBadge(); clearTimeout(searchTimer); searchTimer = setTimeout(() => { savePrefs({ search: $("#search").value }); render(); }, 150); });
+  $("#analysisState").addEventListener("change", () => { savePrefs({ analysisState: $("#analysisState").value }); syncFilterBadge(); render(); });
+  $("#sort").addEventListener("change", () => { savePrefs({ sort: $("#sort").value }); syncFilterBadge(); render(); });
   $("#editCollapse").addEventListener("click", collapseEditor);
   $("#editForm").addEventListener("submit", event => { event.preventDefault(); safe(saveEditor)(); });
   for (const id of ["editCancel", "editClose"]) $("#" + id).addEventListener("click", () => closeEditor());

@@ -1935,3 +1935,137 @@ test('highlight patches preserve separate reading containers for the same paper 
     assert.equal(f.saves[0].projectID, PROJECT_B);
   } finally { f.cleanup(); }
 });
+
+test('compact toolbar starts with optional panels collapsed and exposes all existing actions', async () => {
+  const f = await ui();
+  try {
+    for (const [toggle, panel] of [['toggleFilters', 'filtersPanel'], ['toggleActions', 'actionsPanel'], ['toggleBatch', 'batchPanel']]) {
+      assert.equal(f.document.querySelector('#' + panel).hidden, true);
+      assert.equal(f.document.querySelector('#' + toggle).getAttribute('aria-expanded'), 'false');
+      await f.click(f.document.querySelector('#' + toggle));
+      assert.equal(f.document.querySelector('#' + panel).hidden, false);
+      assert.equal(f.document.querySelector('#' + toggle).getAttribute('aria-expanded'), 'true');
+    }
+    assert.equal(f.document.querySelector('#search').closest('section').id, 'filtersPanel');
+    for (const id of ['current', 'columns', 'displayOptions', 'export', 'exportTemplate', 'importTable', 'showFieldGuidance', 'resetWidths']) {
+      assert.equal(f.document.querySelector('#' + id).closest('section').id, 'actionsPanel');
+    }
+    assert.equal(f.document.querySelector('#batchAI').closest('section').id, 'batchPanel');
+    for (const id of ['project', 'viewTable', 'viewMindmap', 'refresh']) assert.ok(f.document.querySelector('#' + id).closest('.mainbar'));
+    assert.equal(f.document.querySelector('#results').classList.contains('show-field-guidance'), false);
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.apiCalls.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('folding toolbars preserves reading containers, offsets and an unsaved text draft', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '原来的分析'; f.run('render()');
+    const results = readingOffsets(f, 1600, 700), cell = f.cell('remarks');
+    cell.querySelector('.cell-text').scrollTop = 90;
+    await f.click(f.document.querySelector('#toggleActions'));
+    await f.click(f.document.querySelector('#toggleActions'));
+    assert.equal(f.cell('remarks'), cell);
+    assert.equal(results.scrollTop, 1600); assert.equal(results.scrollLeft, 700);
+    assert.equal(cell.querySelector('.cell-text').scrollTop, 90);
+    await f.dblclick(cell);
+    const editor = f.document.querySelector('#inlineValue');
+    await f.input(editor, '原来的分析\n尚未保存的补充');
+    for (const id of ['toggleFilters', 'toggleBatch', 'toggleActions']) {
+      await f.click(f.document.querySelector('#' + id)); await f.click(f.document.querySelector('#' + id));
+    }
+    assert.equal(f.document.querySelector('#inlineValue'), editor);
+    assert.equal(editor.value, '原来的分析\n尚未保存的补充');
+    assert.equal(f.run('editorDirty()'), true);
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.loads.length, 1);
+  } finally { f.cleanup(); }
+});
+
+test('hidden filter controls retain their effect and a visible badge until explicitly cleared', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '已有备注'; f.run('render()');
+    await f.click(f.document.querySelector('#toggleFilters'));
+    await f.input(f.document.querySelector('#search'), '未批注');
+    await f.input(f.document.querySelector('#analysisState'), 'filled', 'change');
+    await f.input(f.document.querySelector('#sort'), 'yearDesc', 'change');
+    await new Promise(resolve => setTimeout(resolve, 180)); await settle();
+    await f.click(f.document.querySelector('#toggleFilters'));
+    assert.equal(f.document.querySelector('#filtersPanel').hidden, true);
+    assert.equal(f.document.querySelector('#toggleFilters').textContent, '筛选 · 3 项');
+    assert.equal(f.document.querySelector('#toggleFilters').dataset.active, 'true');
+    assert.equal(f.document.querySelector('#search').value, '未批注');
+    assert.equal(f.run('state.shown.length'), 1);
+    await f.click(f.document.querySelector('#toggleFilters'));
+    await f.click(f.document.querySelector('#clearFilters'));
+    assert.equal(f.document.querySelector('#toggleFilters').textContent, '筛选');
+    assert.equal(f.document.querySelector('#clearFilters').disabled, true);
+    assert.equal(f.document.querySelector('#search').value, '');
+    assert.equal(f.document.querySelector('#analysisState').value, 'all');
+    assert.equal(f.document.querySelector('#sort').value, 'title');
+    assert.equal(f.prefs().projects[PROJECT_A].search, '');
+    assert.equal(f.row.values.remarks, '已有备注');
+  } finally { f.cleanup(); }
+});
+
+test('panel state and header guidance persist across projects and reopening without changing field requirements', async () => {
+  const f = await ui();
+  let saved;
+  try {
+    const requirement = f.run('allFields().find(field=>field.id==="remarks").requirement');
+    await f.click(f.document.querySelector('#toggleActions'));
+    await f.input(f.document.querySelector('#showFieldGuidance'), true, 'change');
+    assert.equal(f.document.querySelector('#results').classList.contains('show-field-guidance'), true);
+    const cell = f.cell('remarks');
+    const head = [...f.document.querySelectorAll('th')].find(node => node.textContent.includes('我的备注'));
+    assert.equal(head.title, requirement);
+    await f.run(`selectProject('${PROJECT_B}')`);
+    assert.equal(f.document.querySelector('#actionsPanel').hidden, false);
+    assert.equal(f.document.querySelector('#showFieldGuidance').checked, true);
+    assert.equal(f.run('allFields().find(field=>field.id==="remarks").requirement'), requirement);
+    assert.equal(cell.isConnected, false, 'project changes still replace the old project');
+    saved = f.prefs();
+    assert.deepEqual(saved.uiChrome, { filtersOpen: false, actionsOpen: true, batchOpen: false, showFieldGuidance: true });
+  } finally { f.cleanup(); }
+  const reopened = await ui({ saved });
+  try {
+    assert.equal(reopened.document.querySelector('#actionsPanel').hidden, false);
+    assert.equal(reopened.document.querySelector('#toggleActions').getAttribute('aria-expanded'), 'true');
+    assert.equal(reopened.document.querySelector('#results').classList.contains('show-field-guidance'), true);
+  } finally { reopened.cleanup(); }
+});
+
+test('folded batch controls display selected count and do not discard selected papers', async () => {
+  const f = await ui();
+  try {
+    await f.click(f.document.querySelector('#toggleBatch'));
+    await f.click(f.document.querySelector('#selectShown'));
+    await f.click(f.document.querySelector('#toggleBatch'));
+    assert.equal(f.document.querySelector('#batchPanel').hidden, true);
+    assert.equal(f.document.querySelector('#toggleBatch').textContent, '批量操作 · 1 篇');
+    assert.equal(f.document.querySelector('#toggleBatch').dataset.active, 'true');
+    assert.equal(f.run('selectedRows().length'), 1);
+    await f.click(f.document.querySelector('#toggleBatch'));
+    assert.equal(f.document.querySelector('#batchAI').disabled, false);
+    await f.click(f.document.querySelector('#clearSelection'));
+    assert.equal(f.document.querySelector('#toggleBatch').textContent, '批量操作');
+    assert.equal(f.apiCalls.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('a failed toolbar preference write restores the visible state and guidance checkbox', async () => {
+  const f = await ui();
+  try {
+    f.run('Z.Prefs.set = () => { throw new Error("模拟偏好写入失败"); }');
+    await f.click(f.document.querySelector('#toggleActions'));
+    assert.equal(f.document.querySelector('#actionsPanel').hidden, true);
+    assert.equal(f.document.querySelector('#toggleActions').getAttribute('aria-expanded'), 'false');
+    await f.input(f.document.querySelector('#showFieldGuidance'), true, 'change');
+    assert.equal(f.document.querySelector('#showFieldGuidance').checked, false);
+    assert.equal(f.document.querySelector('#results').classList.contains('show-field-guidance'), false);
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.logs.length, 2);
+  } finally { f.cleanup(); }
+});
