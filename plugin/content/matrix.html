@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <title>研矩 · ResearchGrid</title>
-  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css"><link rel="stylesheet" href="display.css"><link rel="stylesheet" href="project-picker.css"><link rel="stylesheet" href="ai-dialog.css"><link rel="stylesheet" href="table-dialog.css"><link rel="stylesheet" href="ai-batch.css"><link rel="stylesheet" href="highlights.css">
+  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css"><link rel="stylesheet" href="display.css"><link rel="stylesheet" href="project-picker.css"><link rel="stylesheet" href="ai-dialog.css"><link rel="stylesheet" href="table-dialog.css"><link rel="stylesheet" href="ai-batch.css"><link rel="stylesheet" href="highlights.css"><link rel="stylesheet" href="column-widths.css"><link rel="stylesheet" href="mindmap.css">
 </head>
 <body>
   <header>
-    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.8.0</span></div>
+    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.9.0</span></div>
     <div class="toolbar">
       <div class="project-label">研究项目<button id="project" class="project-choice" type="button" aria-label="选择研究项目分类" aria-haspopup="dialog" aria-controls="projectPickerDialog">选择 Zotero 分类…</button></div>
       <button id="current">使用 Zotero 所选分类</button>
@@ -23,12 +23,13 @@
     <p id="projectHint" class="hint">在 Zotero 中选择分类，再点击“使用 Zotero 所选分类”。每个分类的分析与备注独立保存。</p>
   </header>
   <div id="projectTabs" class="project-tabs" hidden></div>
+  <div class="viewbar"><div class="view-switch" role="group" aria-label="切换文献视图"><button id="viewTable" type="button" aria-pressed="true">文献表格</button><button id="viewMindmap" type="button" aria-pressed="false">思维导图</button></div><button id="resetWidths" type="button">恢复当前项目列宽</button><span id="viewHint" class="hint">拖动表头右边缘调节列宽 · 双击边缘恢复默认</span></div>
   <div class="selectionbar"><span id="selectionCount" role="status">已选 0 篇</span><button id="selectShown">全选当前筛选</button><button id="selectZotero">勾选 Zotero 中所选</button><button id="clearSelection" disabled>清空选择</button><button id="batchAI" class="primary" disabled>批量 AI 总结（0）</button><span class="hint">双击编辑 · 划选文字后点颜色直接高亮</span></div>
   <div class="statusline"><span id="status" role="status" aria-live="polite">请选择研究项目</span><span id="saveStatus"></span></div>
-  <main id="results"><table id="grid" class="matrix-table" hidden><colgroup></colgroup><thead></thead><tbody></tbody></table>
+  <main id="results"><div id="matrixView"><table id="grid" class="matrix-table" hidden><colgroup></colgroup><thead></thead><tbody></tbody></table>
     <div id="projectGroups" hidden></div>
     <div id="empty"><h2>从一个研究项目开始</h2><p>选择分类后，所有文献都会出现在这里，包括没有高亮或批注的文献。</p></div>
-  </main>
+  </div><div id="mindmapView" hidden></div></main>
   <dialog id="editDialog">
     <form id="editForm"><div class="dialog-title"><h2 id="editHeading"></h2><button type="button" id="editClose" class="icon" aria-label="关闭编辑">×</button></div>
       <p id="editContext" class="hint"></p><p id="editRequirement" class="field-guidance" hidden></p><textarea id="editValue" rows="10" aria-label="分析内容" placeholder="填写你的分析，支持多行文本…"></textarea>
@@ -47,6 +48,6 @@
     <div class="dialog-actions"><span class="spacer"></span><button id="templateCancel">取消</button><button id="templateSave" class="primary">保存待填模板</button></div>
   </dialog>
   <div id="toast" role="status" hidden></div>
-  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="display.js"></script><script src="project-picker.js"></script><script src="ai.js"></script><script src="ai-dialog.js"></script><script src="table-io.js"></script><script src="table-dialog.js"></script><script src="ai-batch.js"></script><script src="highlights.js"></script><script src="matrix.js"></script>
+  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="display.js"></script><script src="project-picker.js"></script><script src="ai.js"></script><script src="ai-dialog.js"></script><script src="table-io.js"></script><script src="table-dialog.js"></script><script src="ai-batch.js"></script><script src="highlights.js"></script><script src="column-widths.js"></script><script src="mindmap.js"></script><script src="matrix.js"></script>
 </body>
 </html>

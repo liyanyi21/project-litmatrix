@@ -142,6 +142,8 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
   vm.runInContext(fs.readFileSync('plugin/content/highlights.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/display.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/project-picker.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/column-widths.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/mindmap.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/matrix.js', 'utf8'), context);
   await settle();
   const run = code => vm.runInContext(code, context);
@@ -181,8 +183,307 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
     sourceCalls, apiCalls, keyCalls, batchSaves, importSaves, pickerCalls, fileReads, fileWrites, queueFile,
     setAIConfig: value => { aiConfig = clone(value); },
     aiConfig: () => clone(aiConfig), keyProvider: fn => { keyProvider = fn; }, settingsOpened: () => settingsOpened,
-    prefs: () => clone(preferences), cleanup() { for (const timer of timers) clearTimeout(timer); } };
+    prefs: () => clone(preferences), cleanup() {
+      run('widthManager?.dispose(); mindmapManager?.dispose()');
+      for (const timer of timers) clearTimeout(timer);
+    } };
 }
+
+test('resizing a non-active project column persists its owner and reset affects only the current project', async () => {
+  const saved = multiProjectPrefs();
+  saved.projects[PROJECT_A].columnWidths = { identity: 390, 'field:findings': 510, 'metadata:year': 180 };
+  saved.projects[PROJECT_B].columnWidths = { identity: 250, 'field:remarks': 420, 'field:archived_value': 670 };
+  const f = await ui({ saved });
+  try {
+    await selectBothProjects(f);
+    const a = projectGroup(f, PROJECT_A), b = projectGroup(f, PROJECT_B);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.equal(a.querySelector('[data-column-resize="field:findings"]').getAttribute('aria-valuenow'), '510');
+    await f.key(b.querySelector('[data-column-resize="field:remarks"]'), 'ArrowRight');
+    assert.equal(f.run('state.project.id'), PROJECT_A, 'a width adjustment does not change the active operation project');
+    assert.deepEqual(f.prefs().projects[PROJECT_A].columnWidths, saved.projects[PROJECT_A].columnWidths);
+    assert.deepEqual(f.prefs().projects[PROJECT_B].columnWidths,
+      { identity: 250, 'field:remarks': 430, 'field:archived_value': 670 });
+    f.run('render()');
+    assert.equal(projectGroup(f, PROJECT_B).querySelector('[data-column-resize="field:remarks"]').getAttribute('aria-valuenow'), '430');
+    await f.click(f.document.querySelector('#resetWidths'));
+    assert.deepEqual(f.prefs().projects[PROJECT_A].columnWidths, {});
+    assert.equal(projectGroup(f, PROJECT_A).querySelector('[data-column-resize="field:findings"]').getAttribute('aria-valuenow'), '290');
+    assert.equal(projectGroup(f, PROJECT_B).querySelector('[data-column-resize="field:remarks"]').getAttribute('aria-valuenow'), '430');
+    assert.equal(f.prefs().projects[PROJECT_B].columnWidths['field:archived_value'], 670);
+    assert.equal(f.saves.length + f.apiCalls.length + f.batchSaves.length + f.importSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('column widths follow stable field identities through rename, reorder, hide and reopen', async () => {
+  const saved = multiProjectPrefs();
+  saved.projects[PROJECT_A].columnWidths = { identity: 390, 'field:findings': 510, 'field:remarks': 440, 'metadata:year': 180 };
+  const f = await ui({ saved });
+  let reopened;
+  try {
+    f.run(`savePrefs({ fields: allFields().slice().reverse().map(field => ({ ...field, label: '改名：' + field.label })) }); render()`);
+    const handles = [...f.document.querySelectorAll('#grid [data-column-resize]')];
+    assert.deepEqual(handles.map(handle => handle.dataset.columnResize), ['identity', 'metadata:year', 'field:remarks', 'field:findings']);
+    assert.deepEqual(handles.map(handle => handle.getAttribute('aria-valuenow')), ['390', '180', '440', '510']);
+    assert.match(handles.at(-1).getAttribute('aria-label'), /改名：甲项目结论/);
+    f.run(`savePrefs({ fields: allFields().map(field => ({ ...field, visible: field.id !== 'findings' })) }); render()`);
+    assert.equal(f.document.querySelector('#grid [data-column-resize="field:findings"]'), null);
+    assert.equal(f.prefs().projects[PROJECT_A].columnWidths['field:findings'], 510);
+    f.run(`savePrefs({ fields: allFields().map(field => ({ ...field, visible: true })) }); render()`);
+    reopened = await ui({ saved: f.prefs() });
+    assert.equal(reopened.document.querySelector('#grid [data-column-resize="field:findings"]').getAttribute('aria-valuenow'), '510');
+    assert.match(reopened.document.querySelector('#grid [data-column-resize="field:findings"]').getAttribute('aria-label'), /改名：甲项目结论/);
+    await reopened.key(reopened.document.querySelector('#grid [data-column-resize="field:findings"]'), 'Home');
+    assert.equal(reopened.prefs().projects[PROJECT_A].columnWidths['field:findings'], undefined);
+    assert.equal(reopened.prefs().projects[PROJECT_A].columnWidths['field:remarks'], 440);
+    assert.equal(reopened.document.querySelector('#grid [data-column-resize="field:findings"]').getAttribute('aria-valuenow'), '290');
+  } finally { f.cleanup(); reopened?.cleanup(); }
+});
+
+test('resizing and restoring widths leave an active text draft intact and persistence failure rolls back width', async () => {
+  const f = await ui();
+  try {
+    await f.dblclick(f.cell('remarks'));
+    const draft = f.document.querySelector('#inlineValue');
+    await f.input(draft, '尚未保存的表内内容');
+    const handle = f.document.querySelector('#grid [data-column-resize="field:remarks"]');
+    await f.key(handle, 'ArrowRight', { shiftKey: true });
+    assert.equal(handle.getAttribute('aria-valuenow'), '370');
+    assert.equal(f.prefs().projects[PROJECT_A].columnWidths['field:remarks'], 370);
+    assert.equal(f.document.querySelector('#inlineValue'), draft);
+    assert.equal(draft.value, '尚未保存的表内内容');
+    await f.click(f.document.querySelector('#resetWidths'));
+    assert.equal(f.document.querySelector('#inlineValue'), draft);
+    assert.equal(draft.value, '尚未保存的表内内容');
+    f.run(`Z.Prefs.set = () => { throw new Error('模拟偏好存储失败'); }`);
+    await f.key(f.document.querySelector('#grid [data-column-resize="field:remarks"]'), 'ArrowRight');
+    assert.equal(f.document.querySelector('#grid [data-column-resize="field:remarks"]').getAttribute('aria-valuenow'), '320');
+    assert.deepEqual(f.prefs().projects[PROJECT_A].columnWidths, {});
+    assert.match(f.document.querySelector('#toast').textContent, /模拟偏好存储失败/);
+    assert.equal(f.document.querySelector('#inlineValue'), draft);
+    assert.equal(f.saves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('view switches protect unsaved text and do not bypass an open settings dialog', async () => {
+  const f = await ui();
+  try {
+    await f.dblclick(f.cell('remarks'));
+    const draft = f.document.querySelector('#inlineValue');
+    await f.input(draft, '切换视图前未保存的草稿');
+    f.window.confirm = () => false;
+    await f.click(f.document.querySelector('#viewMindmap'));
+    assert.equal(f.run('state.view'), 'table');
+    assert.equal(f.document.querySelector('#inlineValue'), draft);
+    assert.equal(draft.value, '切换视图前未保存的草稿');
+    assert.equal(f.run('mindmapManager.isOpen()'), false);
+    assert.equal(f.saves.length, 0);
+    f.window.confirm = () => true;
+    await f.click(f.document.querySelector('#viewMindmap'));
+    assert.equal(f.run('state.view'), 'mindmap');
+    assert.equal(f.document.querySelector('#inlineValue'), null);
+    assert.equal(f.row.values.remarks, '');
+    assert.equal(f.document.querySelector('#matrixView').hidden, true);
+    assert.equal(f.document.querySelector('#mindmapView').hidden, false);
+    await f.click(f.document.querySelector('#displayOptions'));
+    assert.equal(f.run('displayManager.isOpen()'), true);
+    await f.click(f.document.querySelector('#viewTable'));
+    assert.equal(f.run('state.view'), 'mindmap', 'a view button cannot dismiss another manager');
+    assert.equal(f.run('displayManager.isOpen()'), true);
+    assert.equal(f.saves.length + f.apiCalls.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('a failed reload hides stale mindmap content and exposes the retry state', async () => {
+  const f = await ui();
+  try {
+    f.row.values.findings = '刷新前的项目分析';
+    f.run('render()');
+    await f.click(f.document.querySelector('#viewMindmap'));
+    assert.equal(f.run('mindmapManager.isOpen()'), true);
+    f.repo.loadProject = async () => { throw new Error('模拟新一轮读取失败'); };
+    await f.run('reload()');
+    assert.equal(f.run('state.loadError'), true);
+    assert.equal(f.run('mindmapManager.isOpen()'), false);
+    assert.equal(f.document.querySelector('#mindmapView').hidden, true);
+    assert.equal(f.document.querySelector('#matrixView').hidden, false);
+    assert.equal(f.document.querySelector('#grid').hidden, true);
+    assert.equal(f.document.querySelector('#projectGroups').hidden, true);
+    assert.equal(f.document.querySelector('#empty').hidden, false);
+    assert.match(f.document.querySelector('#empty').textContent, /模拟新一轮读取失败/);
+    assert.equal(f.apiCalls.length + f.saves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('mindmap follows the active project and current filter without mixing another project analysis', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values.findings = '仅甲项目的客观结论';
+    f.rowB.values.methods_sample = '仅乙项目的实验方法';
+    await selectBothProjects(f);
+    await f.click(f.document.querySelector('#viewMindmap'));
+    const map = f.document.querySelector('#mindmapView');
+    const paperID = 'paper:1:PAPERKEY';
+    assert.equal(map.querySelector('.rg-mm-project').textContent, '测试项目 A');
+    await f.click(map.querySelector(`[data-mm-select="${paperID}"]`));
+    assert.match(map.querySelector('.rg-mm-details').textContent, /仅甲项目的客观结论/);
+    assert.doesNotMatch(map.textContent, /仅乙项目的实验方法/);
+    await f.click(map.querySelector(`[data-mm-toggle="${paperID}"]`));
+    assert.ok(map.querySelector(`[data-mm-node="${paperID}:field:findings"]`));
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    assert.equal(map.querySelector('.rg-mm-project').textContent, '测试项目 B');
+    await f.click(map.querySelector(`[data-mm-toggle="${paperID}"]`));
+    assert.ok(map.querySelector(`[data-mm-node="${paperID}:field:methods_sample"]`));
+    assert.equal(map.querySelector(`[data-mm-node="${paperID}:field:findings"]`), null);
+    assert.doesNotMatch(map.textContent, /仅甲项目的客观结论/);
+    f.document.querySelector('#search').value = '仅甲项目的客观结论';
+    f.run('render()');
+    assert.equal(f.run('state.shown.length'), 1, 'the other project can still have a matching table row');
+    assert.equal(map.querySelectorAll('.rg-mm-paper').length, 0, 'the graph must not fall back to another project matching the filter');
+    assert.match(map.querySelector('.rg-mm-count').textContent, /0 篇文献/);
+    f.document.querySelector('#search').value = '';
+    f.run('render()');
+    assert.equal(map.querySelectorAll('.rg-mm-paper').length, 1);
+    assert.equal(f.saves.length + f.apiCalls.length + f.importSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('select all in mindmap checks only the visible project and keeps other project selections counted as hidden', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    await selectBothProjects(f);
+    await f.click(f.document.querySelector('#viewMindmap'));
+    await f.click(f.document.querySelector('#selectShown'));
+    assert.deepEqual(clone(f.run('selectedRows().map(row => row.projectID)')), [PROJECT_A]);
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    assert.match(f.document.querySelector('#selectionCount').textContent, /已选 1 篇.*筛选外 1 篇/);
+    assert.equal(f.document.querySelector('#batchAI').disabled, true);
+    await f.click(f.document.querySelector('#selectShown'));
+    assert.deepEqual(clone(f.run('selectedRows().map(row => row.projectID)')), [PROJECT_A, PROJECT_B]);
+    assert.match(f.document.querySelector('#selectionCount').textContent, /已选 2 篇.*筛选外 1 篇/);
+    assert.match(f.document.querySelector('#batchAI').textContent, /测试项目 B（1）/);
+    await f.click(f.document.querySelector('#viewTable'));
+    assert.equal(f.document.querySelector('#selectionCount').textContent, '已选 2 篇');
+    assert.equal(f.saves.length + f.apiCalls.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('editing a graph field uses the existing modal and saves only that project owner', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values.findings = '甲项目保留的原始结论';
+    f.rowB.values.methods_sample = '乙项目原始方法';
+    await selectBothProjects(f);
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    await f.click(f.document.querySelector('#viewMindmap'));
+    const map = f.document.querySelector('#mindmapView'), paperID = 'paper:1:PAPERKEY';
+    await f.click(map.querySelector(`[data-mm-toggle="${paperID}"]`));
+    await f.dblclick(map.querySelector(`[data-mm-select="${paperID}:field:methods_sample"]`));
+    assert.equal(f.document.querySelector('#editDialog').open, true);
+    assert.equal(f.run('state.editing.project.id'), PROJECT_B);
+    assert.equal(f.document.querySelector('#editHeading').textContent, '乙项目方法');
+    assert.equal(f.document.querySelector('#editValue').value, '乙项目原始方法');
+    await f.input(f.document.querySelector('#editValue'), '乙项目通过导图更新的方法');
+    await f.key(f.document.querySelector('#editValue'), 'Enter', { metaKey: true });
+    assert.equal(f.saves.length, 1);
+    assert.equal(f.saves[0].projectID, PROJECT_B);
+    assert.equal(f.saves[0].id, 'methods_sample');
+    assert.equal(f.saves[0].expected, '乙项目原始方法');
+    assert.equal(f.rowB.values.methods_sample, '乙项目通过导图更新的方法');
+    assert.equal(f.row.values.findings, '甲项目保留的原始结论');
+    assert.equal(f.document.querySelector('#editDialog').open, false);
+    assert.equal(f.run('state.view'), 'mindmap');
+    assert.match(map.textContent, /乙项目通过导图更新的方法/);
+    assert.equal(f.apiCalls.length + f.importSaves.length + f.batchSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('a field hidden from the table remains editable in the graph without offering an unavailable inline target', async () => {
+  const saved = multiProjectPrefs();
+  saved.projects[PROJECT_A].fields[0].visible = false;
+  const f = await ui({ saved });
+  try {
+    f.row.values.findings = '隐藏列已有分析';
+    f.run('render()');
+    assert.equal(f.cell('findings'), null);
+    await f.click(f.document.querySelector('#viewMindmap'));
+    const map = f.document.querySelector('#mindmapView'), paperID = 'paper:1:PAPERKEY';
+    await f.click(map.querySelector(`[data-mm-toggle="${paperID}"]`));
+    assert.ok(map.querySelector(`[data-mm-node="${paperID}:field:findings"]`));
+    await f.dblclick(map.querySelector(`[data-mm-select="${paperID}:field:findings"]`));
+    assert.equal(f.document.querySelector('#editDialog').open, true);
+    assert.equal(f.document.querySelector('#editCollapse').hidden, true);
+    assert.equal(f.run('state.editing.project.id'), PROJECT_A);
+    await f.input(f.document.querySelector('#editValue'), '导图中更新隐藏列分析');
+    await f.key(f.document.querySelector('#editValue'), 'Enter', { metaKey: true });
+    assert.equal(f.saves.length, 1);
+    assert.equal(f.saves[0].projectID, PROJECT_A);
+    assert.equal(f.saves[0].id, 'findings');
+    assert.equal(f.row.values.findings, '导图中更新隐藏列分析');
+    assert.equal(f.cell('findings'), null, 'editing through the map does not change table visibility');
+    assert.equal(f.document.querySelector('#editDialog').open, false);
+  } finally { f.cleanup(); }
+});
+
+test('returning from graph editing to the table preserves the multiline draft and original highlight snapshot', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values.findings = '原始结论文字';
+    f.row.highlights.findings = [{ start: 0, end: 2, color: 'yellow' }];
+    await selectBothProjects(f);
+    await f.click(f.document.querySelector('#viewMindmap'));
+    const map = f.document.querySelector('#mindmapView'), paperID = 'paper:1:PAPERKEY';
+    await f.click(map.querySelector(`[data-mm-select="${paperID}"]`));
+    await f.click(map.querySelector('[data-mm-edit="findings"]'));
+    assert.equal(f.document.querySelector('#editDialog').open, true);
+    const draft = '原始结论文字\n从导图编辑的补充';
+    await f.input(f.document.querySelector('#editValue'), draft);
+    await f.click(f.document.querySelector('#editCollapse'));
+    assert.equal(f.run('state.view'), 'table');
+    assert.equal(f.document.querySelector('#mindmapView').hidden, true);
+    assert.equal(f.document.querySelector('#matrixView').hidden, false);
+    assert.equal(f.document.querySelector('#editDialog').open, false);
+    assert.equal(f.document.querySelector('#inlineValue').value, draft);
+    assert.equal(f.run('state.editing.project.id'), PROJECT_A);
+    assert.equal(f.run('state.editing.original'), '原始结论文字');
+    assert.deepEqual(clone(f.run('state.editing.originalHighlights')), [{ start: 0, end: 2, color: 'yellow' }]);
+    assert.equal(f.saves.length, 0, 'switching from map modal to table is not a save');
+    await f.click(f.document.querySelector('#inlineSave'));
+    assert.equal(f.saves.length, 1);
+    assert.equal(f.saves[0].projectID, PROJECT_A);
+    assert.equal(f.row.values.findings, draft);
+    assert.equal(f.rowB.values.findings, '');
+    assert.deepEqual(f.saves[0].options.expectedHighlights, [{ start: 0, end: 2, color: 'yellow' }]);
+  } finally { f.cleanup(); }
+});
+
+test('mindmap layout persists independently per project and reopening restores both contexts', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  let reopened;
+  try {
+    f.row.values.findings = '甲分析';
+    f.rowB.values.methods_sample = '乙分析';
+    await selectBothProjects(f);
+    await f.click(f.document.querySelector('#viewMindmap'));
+    const paperID = 'paper:1:PAPERKEY';
+    await f.key(f.document.querySelector(`[data-mm-select="${paperID}"]`), 'ArrowRight');
+    const layoutA = clone(f.prefs().projects[PROJECT_A].mindmapLayout);
+    assert.ok(layoutA.positions[paperID]);
+    assert.equal(f.prefs().projects[PROJECT_B].mindmapLayout, undefined);
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    await f.key(f.document.querySelector(`[data-mm-select="${paperID}"]`), 'ArrowRight', { shiftKey: true });
+    const layoutB = clone(f.prefs().projects[PROJECT_B].mindmapLayout);
+    assert.equal(layoutB.positions[paperID].x - layoutA.positions[paperID].x, 30);
+    assert.deepEqual(f.prefs().projects[PROJECT_A].mindmapLayout, layoutA);
+    reopened = await ui({ saved: f.prefs() });
+    assert.equal(reopened.run('state.view'), 'mindmap');
+    assert.equal(reopened.run('state.project.id'), PROJECT_B);
+    assert.deepEqual(clone(reopened.run('mindmapManager.layout')), layoutB);
+    await reopened.click(reopened.document.querySelector(`[data-active-project="${PROJECT_A}"]`));
+    assert.deepEqual(clone(reopened.run('mindmapManager.layout')), layoutA);
+    assert.equal(f.saves.length + f.apiCalls.length + f.importSaves.length, 0);
+  } finally { f.cleanup(); reopened?.cleanup(); }
+});
 
 test('successful project load renders all papers and clears the loading status', async () => {
   const f = await ui();

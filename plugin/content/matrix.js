@@ -9,7 +9,7 @@ const repo = new PLMRepository(Z);
 const PREF = "extensions.projectlitmatrix.ui";
 const $ = selector => document.querySelector(selector);
 const state = { projects: [], projectIDs: [], project: null, rows: [], shown: [], loading: false,
-  generation: 0, selected: new Set(), pendingReload: false, editing: null, saving: false, preferences: { version: 1, projects: {} } };
+  generation: 0, selected: new Set(), pendingReload: false, editing: null, saving: false, view: "table", loadError: false, preferences: { version: 1, projects: {} } };
 
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
@@ -46,12 +46,16 @@ function prefs(project = state.project) {
 function allFields(project = state.project) { return prefs(project).fields; }
 function activeFields(project = state.project) { return allFields(project).filter(f => !f.archived); }
 function savePrefs(patch = {}) {
-  if (!state.project) return;
-  const next = { ...state.preferences, lastProject: state.project.id, lastProjectSelection: [...state.projectIDs],
-    projects: { ...state.preferences.projects, [state.project.id]: { ...prefs(), ...patch } } };
+  return saveProjectPrefs(state.project, patch);
+}
+function saveProjectPrefs(project, patch = {}) {
+  if (!project) return;
+  const next = { ...state.preferences, lastProject: state.project?.id || null, lastProjectSelection: [...state.projectIDs],
+    projects: { ...state.preferences.projects, [project.id]: { ...prefs(project), ...patch } } };
   Z.Prefs.set(PREF, JSON.stringify(next), true);
   state.preferences = next;
-  state.project.fields = allFields();
+  const owner = state.projects.find(candidate => candidate.id === project.id);
+  if (owner) owner.fields = allFields(owner);
 }
 let fieldManager;
 let displayManager;
@@ -61,6 +65,54 @@ let batchManager;
 let highlightManager;
 let tableManager;
 let templateExport;
+let widthManager;
+let mindmapManager;
+function layoutBusy() { return !!mindmapManager?.busy; }
+async function setView(view) {
+  if (!["table", "mindmap"].includes(view) || state.loading || state.saving || layoutBusy()) return false;
+  if (projectPicker?.isOpen() || displayManager?.isOpen() || fieldManager?.dialog?.open || aiManager?.isOpen()
+    || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) return false;
+  if (state.editing && !closeEditor()) return false;
+  const next = { ...state.preferences, viewMode: view };
+  Z.Prefs.set(PREF, JSON.stringify(next), true); state.preferences = next; state.view = view;
+  highlightManager?.clear(); syncView(); syncSelection(); return true;
+}
+function syncView() {
+  const graph = state.view === "mindmap" && !!state.project && !state.loading && !state.loadError;
+  $("#viewTable").setAttribute("aria-pressed", String(state.view === "table"));
+  $("#viewMindmap").setAttribute("aria-pressed", String(state.view === "mindmap"));
+  $("#viewMindmap").disabled = !state.project || state.loading;
+  $("#viewTable").disabled = state.loading;
+  $("#resetWidths").hidden = state.view !== "table";
+  $("#resetWidths").disabled = !state.project || state.loading || state.saving;
+  $("#viewHint").textContent = state.view === "mindmap"
+    ? `导图：${state.project?.name || "当前操作项目"} · 跟随当前筛选 · 拖动节点或空白处，双击字段编辑`
+    : "拖动表头右边缘调节列宽 · 双击边缘恢复默认";
+  $("#matrixView").hidden = graph;
+  $("#results").classList.toggle("mindmap-results", graph);
+  if (graph) {
+    if (mindmapManager?.isOpen()) mindmapManager.update(); else mindmapManager?.show();
+  } else mindmapManager?.hide();
+}
+function resetColumnWidths() {
+  if (!state.project || state.loading || state.saving) return;
+  savePrefs({ columnWidths: {} });
+  // Reattach only the current project's handles; do not discard an inline draft.
+  for (const table of document.querySelectorAll(".matrix-table")) {
+    if (table.dataset.widthProject === state.project.id) attachColumnWidths(table, state.project);
+  }
+  toast("已恢复当前项目的默认列宽");
+}
+function attachColumnWidths(table, project) {
+  if (!project || !widthManager) return;
+  const fields = allFields(project).filter(field => !field.archived && field.visible);
+  const columns = [{ id: "identity", label: "文献与原文", width: 320, min: 180 },
+    ...metadataColumns(project).map(column => ({ id: `metadata:${column.id}`, label: column.label, width: column.width })),
+    ...fields.map(field => ({ id: `field:${field.id}`, label: field.label, width: field.id === "remarks" ? 320 : 290 }))];
+  table.dataset.widthProject = project.id;
+  widthManager.attach(table, { projectID: project.id, columns, widths: prefs(project).columnWidths || {},
+    onChange: widths => saveProjectPrefs(project, { columnWidths: widths }) });
+}
 function showColumns() {
   if (!state.project || state.loading) return;
   if (projectPicker?.isOpen() || displayManager?.isOpen() || aiManager?.isOpen() || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) { toast("请先关闭当前分类选择、显示选项、AI 或表格窗口。"); return; }
@@ -150,7 +202,7 @@ const rowIdentity = row => `${row.projectID || state.project?.id || ""}|${row.li
 function selectedRows() { return state.rows.filter(row => state.selected.has(rowIdentity(row))); }
 function syncSelection() {
   const rows = selectedRows();
-  const shown = new Set(state.shown.map(rowIdentity));
+  const shown = new Set((state.view === "mindmap" ? activeRows(state.shown) : state.shown).map(rowIdentity));
   const hidden = rows.filter(row => !shown.has(rowIdentity(row))).length;
   $("#selectionCount").textContent = `已选 ${rows.length} 篇${hidden ? `（当前筛选外 ${hidden} 篇）` : ""}`;
   const activeSelected = activeRows(rows);
@@ -166,7 +218,7 @@ function syncSelection() {
 }
 function selectShown() {
   if (state.loading) return;
-  for (const row of state.shown) state.selected.add(rowIdentity(row));
+  for (const row of state.view === "mindmap" ? activeRows(state.shown) : state.shown) state.selected.add(rowIdentity(row));
   syncSelection();
 }
 function selectFromZotero() {
@@ -268,6 +320,9 @@ function setBusy(value) {
   $("#exportTemplate").disabled = value || !state.shown.length;
   $("#importTable").disabled = value || !state.project || !state.project.library.editable;
   $("#columns").disabled = value || !state.project;
+  $("#viewTable").disabled = value;
+  $("#viewMindmap").disabled = value || !state.project;
+  $("#resetWidths").disabled = value || !state.project || state.saving;
   $("#results").setAttribute("aria-busy", String(value));
   syncDisplayControls();
 }
@@ -286,7 +341,7 @@ function syncControls() {
 }
 function selectionLocked(ids, { fromPicker = false } = {}) {
   const unchanged = JSON.stringify(ids) === JSON.stringify(state.projectIDs);
-  if (state.saving) { toast("正在保存，请稍后切换项目。"); return true; }
+  if (state.saving || layoutBusy()) { toast("正在保存，请稍后切换项目。"); return true; }
   if ((projectPicker?.isOpen() && !fromPicker) || displayManager?.isOpen() || tableManager?.isOpen()
     || $("#templateDialog").open || aiManager?.isOpen() || batchManager?.isOpen() || fieldManager?.dialog?.open) {
     if (!unchanged) toast("请先保存或关闭当前窗口，再切换项目。");
@@ -331,7 +386,7 @@ async function focusProject(id) {
   const project = state.projects.find(project => project.id === id && state.projectIDs.includes(id));
   if (!project) throw new Error("此项目不在当前选择中。");
   if (project.id === state.project?.id) return true;
-  if (state.saving || projectPicker?.isOpen() || displayManager?.isOpen() || tableManager?.isOpen()
+  if (state.saving || layoutBusy() || projectPicker?.isOpen() || displayManager?.isOpen() || tableManager?.isOpen()
     || aiManager?.isOpen() || batchManager?.isOpen() || fieldManager?.dialog?.open || $("#templateDialog").open) {
     toast("请先关闭当前窗口，再更改操作项目。"); return false;
   }
@@ -347,7 +402,8 @@ function renderProjectTabs() {
       title: project.label, onclick: safe(() => focusProject(project.id)) }, project.name)));
 }
 async function reload() {
-  if (state.editing || state.saving) { state.pendingReload = true; return; }
+  if (state.editing || state.saving || layoutBusy()) { state.pendingReload = true; return; }
+  state.loadError = false;
   const generation = ++state.generation;
   highlightManager?.clear(); refreshChoices();
   if (!state.projectIDs.length) {
@@ -382,9 +438,11 @@ async function reload() {
   } catch (error) {
     if (generation !== state.generation) return;
     Z.logError(error); $("#status").textContent = "加载失败";
+    state.loadError = true;
     $("#grid").hidden = true; $("#projectGroups").hidden = true; $("#empty").hidden = false;
     $("#empty").replaceChildren(h("h2", {}, "文献暂时无法加载"), h("p", {}, error.message || String(error)),
       h("button", { onclick: safe(reload) }, "重试"));
+    syncView();
   } finally {
     if (generation === state.generation) { setBusy(false); if (state.pendingReload) scheduleReload(); }
   }
@@ -448,10 +506,12 @@ function renderTable(table, project, shown) {
     fragment.append(h("tr", {}, identity, ...metadataCells, ...cells));
   }
   table.querySelector("tbody").replaceChildren(fragment);
+  attachColumnWidths(table, project);
 }
 function render() {
   if (state.editing) return;
   highlightManager?.clear();
+  widthManager?.dispose();
   const scroll = $("#results").scrollTop, p = prefs();
   const compare = (a, b) => {
     if (p.sort === "yearDesc" || p.sort === "yearAsc") {
@@ -496,7 +556,7 @@ function render() {
   $("#empty").replaceChildren(h("h2", {}, state.loading ? "正在整理文献…" : !state.project ? "从一个研究项目开始" : state.rows.length ? "没有符合条件的文献" : "所选分类还没有文献"),
     h("p", {}, !state.project ? "点击研究项目，搜索并勾选需要的 Zotero 分类。" : state.rows.length ? "可以清空搜索或切换分析状态。" : "添加文献后点击刷新；子分类可通过上方开关包含。"));
   $("#results").scrollTop = scroll;
-  renderProjectTabs(); syncDisplayControls(); syncSelection();
+  renderProjectTabs(); syncDisplayControls(); syncSelection(); syncView();
 }
 function editorValue() {
   return state.editing?.mode === "inline" ? $("#inlineValue").value : $("#editValue").value;
@@ -575,6 +635,8 @@ function prepareDialog(value) {
   $("#editRequirement").hidden = !field.requirement;
   $("#editValue").value = value;
   $("#editValue").placeholder = field.requirement || "填写你的分析，支持多行文本…";
+  $("#editCollapse").hidden = ![...document.querySelectorAll(".matrix-table tbody td[data-field]")]
+    .some(cell => cell.dataset.row === rowKey(row) && cell.dataset.field === field.id);
   $("#editError").textContent = "";
   $("#editDialog").showModal(); $("#editValue").focus();
 }
@@ -592,6 +654,13 @@ function collapseEditor() {
   const previous = state.editing;
   const { row, field, original } = previous;
   const value = editorValue();
+  if (state.view === "mindmap") {
+    // Keep the same draft, but expose its existing table cell before mounting it.
+    const next = { ...state.preferences, viewMode: "table" };
+    try { Z.Prefs.set(PREF, JSON.stringify(next), true); }
+    catch (error) { failure(error); return; }
+    state.preferences = next; state.view = "table"; syncView();
+  }
   // Keep the existing row in place: pending search/filter changes must not hide
   // it between collapsing the modal and mounting the inline draft.
   state.editing = null; $("#editDialog").close();
@@ -763,13 +832,36 @@ function scheduleReload() {
   state.pendingReload = true;
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => {
-    if (state.loading || state.editing || state.saving) return;
+    if (state.loading || state.editing || state.saving || layoutBusy()) return;
     safe(reload)();
   }, 650);
 }
 async function init() {
   if (!Z) throw new Error("无法连接 Zotero，请从 Zotero 工具菜单打开插件。");
   readPrefs(); refreshChoices();
+  state.view = state.preferences.viewMode === "mindmap" ? "mindmap" : "table";
+  widthManager = new RGColumnWidths.Manager({ document, notify: toast });
+  mindmapManager = new RGMindmap.Manager({
+    document, container: $("#mindmapView"), getProject: () => state.project,
+    getRows: () => activeRows(state.shown), getFields: activeFields,
+    getLayout: project => prefs(project).mindmapLayout,
+    saveLayout: (project, layout) => {
+      saveProjectPrefs(project, { mindmapLayout: layout });
+      if (state.pendingReload) scheduleReload();
+    },
+    onEdit: async (row, field) => {
+      if (state.loading || state.saving || layoutBusy()) return false;
+      const live = state.rows.find(candidate => candidate.projectID === row.projectID && candidate.id === row.id
+        && candidate.key === row.key && candidate.libraryID === row.libraryID);
+      const liveField = activeFields(ownerProject(live)).find(candidate => candidate.id === field.id);
+      if (!live || !live.editable || !liveField) return false;
+      return openEditor(live, liveField, "modal");
+    },
+    onOpenPaper: row => repo.openPaper(row), onLocate: row => repo.selectItem(row.id), notify: toast,
+  });
+  $("#viewTable").addEventListener("click", safe(() => setView("table")));
+  $("#viewMindmap").addEventListener("click", safe(() => setView("mindmap")));
+  $("#resetWidths").addEventListener("click", safe(resetColumnWidths));
   highlightManager = new RGHighlights.Manager({
     document, getProject: () => state.project, getProjectForRow: ownerProject,
     getFields: row => activeFields(ownerProject(row)), getRowID: rowKey, getRows: () => state.rows,
@@ -821,7 +913,7 @@ async function init() {
     if (!event.isComposing && event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); safe(saveEditor)(); }
   });
   window.addEventListener("beforeunload", event => {
-    if (state.saving || (state.editing && editorDirty()) ||
+    if (state.saving || layoutBusy() || mindmapManager?.dirty() || (state.editing && editorDirty()) ||
       (projectPicker?.isOpen() && (projectPicker.busy || projectPicker.dirty())) ||
       (displayManager?.isOpen() && (displayManager.busy || displayManager.dirty())) ||
       (fieldManager?.dialog?.open && (fieldManager.busy || fieldManager.dirty())) ||
@@ -831,7 +923,7 @@ async function init() {
   });
   const observerID = Z.Notifier.registerObserver({ notify: () => scheduleReload() },
     ["item", "item-tag", "collection", "collection-item"], "projectlitmatrix");
-  window.addEventListener("unload", () => { aiManager?.cancel(); batchManager?.cancel(); highlightManager?.dispose(); Z.Notifier.unregisterObserver(observerID); clearTimeout(reloadTimer); clearTimeout(toastTimer); clearTimeout(searchTimer); });
+  window.addEventListener("unload", () => { aiManager?.cancel(); batchManager?.cancel(); highlightManager?.dispose(); widthManager?.dispose(); mindmapManager?.dispose(); Z.Notifier.unregisterObserver(observerID); clearTimeout(reloadTimer); clearTimeout(toastTimer); clearTimeout(searchTimer); });
   window.ProjectLitMatrixUI = { selectProject, selectProjects, reload, showFields: showColumns };
   const query = new URLSearchParams(location.search);
   let requested = window.__plmRequestedProjects;

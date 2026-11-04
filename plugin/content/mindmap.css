@@ -1,0 +1,41 @@
+.rg-mindmap { display:flex; flex-direction:column; height:100%; min-height:500px; border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden; }
+.rg-mm-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:7px; padding:12px 15px; border-bottom:1px solid var(--line); }
+.rg-mm-toolbar button { font-size:12px; padding:5px 9px; }
+.rg-mm-project { flex:1; min-width:140px; font-size:14px; overflow-wrap:anywhere; }
+.rg-mm-zoom { min-width:40px; text-align:center; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.rg-mm-hint { color:var(--muted); font-size:11px; margin:0; padding:7px 15px; border-bottom:1px solid var(--line); }
+.rg-mm-workspace { display:flex; flex:1; min-height:370px; overflow:hidden; }
+.rg-mm-canvas { position:relative; flex:1; min-width:200px; overflow:hidden; cursor:grab; touch-action:none; background-color:var(--bg); background-image:radial-gradient(var(--line) 1px,transparent 1px); background-size:20px 20px; }
+.rg-mm-canvas:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
+.rg-mm-stage { position:absolute; left:0; top:0; width:1px; height:1px; transform-origin:0 0; }
+.rg-mm-edges { position:absolute; overflow:visible; pointer-events:none; }
+.rg-mm-edges path { fill:none; stroke:var(--line); stroke-width:2.5; }
+.rg-mm-node { position:absolute; border:1px solid var(--line); border-radius:11px; background:var(--surface); box-shadow:0 2px 5px #0000000a; }
+.rg-mm-node.selected { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); }
+.rg-mm-node-body { width:100%; height:100%; display:flex; flex-direction:column; justify-content:center; gap:8px; padding:13px 23px 13px 15px; border:0; border-radius:11px; background:transparent; text-align:left; white-space:normal; cursor:grab; touch-action:none; user-select:none; }
+.rg-mm-node-body:hover { background:var(--hover); }
+.rg-mm-node-body:focus-visible { outline:3px solid var(--accent); outline-offset:4px; }
+.rg-mm-project .rg-mm-node-body { background:var(--soft); }
+.rg-mm-label { font-size:14px; line-height:1.5; font-weight:600; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+.rg-mm-subtitle { font-size:11px; line-height:1.5; color:var(--muted); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+.rg-mm-paper .rg-mm-subtitle { -webkit-line-clamp:1; }
+.rg-mm-project .rg-mm-label { color:var(--accent); font-size:16px; }
+.rg-mm-toggle { position:absolute; right:-12px; top:calc(50% - 12px); width:24px; height:24px; padding:0; border:1px solid var(--accent); border-radius:50%; background:var(--surface); color:var(--accent); font-size:17px; line-height:20px; text-align:center; }
+.rg-mm-dragging,.rg-mm-dragging .rg-mm-node-body { cursor:grabbing; user-select:none; }
+.rg-mm-details { flex:0 0 310px; min-width:240px; padding:17px; border-left:1px solid var(--line); overflow:auto; max-height:100%; }
+.rg-mm-details h2 { margin:4px 0 10px; font-size:16px; line-height:1.6; overflow-wrap:anywhere; }
+.rg-mm-details p { font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.rg-mm-detail-kind,.rg-mm-detail-authors { color:var(--muted); font-size:11px; }
+.rg-mm-detail-actions { display:flex; flex-wrap:wrap; gap:7px; margin:13px 0; }
+.rg-mm-details button { font-size:11px; padding:4px 7px; }
+.rg-mm-detail-field { border-top:1px solid var(--line); margin-top:16px; padding-top:12px; }
+.rg-mm-field-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.rg-mm-field-heading h3 { font-size:13px; margin:0; }
+.rg-mm-requirement { color:var(--muted); background:var(--soft); padding:6px 8px; border-radius:5px; white-space:pre-wrap; }
+.rg-mm-fulltext { white-space:pre-wrap; }
+.rg-mm-unfilled { color:var(--muted); }
+.rg-mm-footer { display:flex; align-items:center; flex-wrap:wrap; gap:12px; border-top:1px solid var(--line); padding:8px 15px; color:var(--muted); font-size:11px; }
+.rg-mm-pan { display:flex; gap:3px; }
+.rg-mm-pan button { padding:1px 8px; font-size:12px; }
+.rg-mm-status { margin-left:auto; }
+@media(max-width:800px) { .rg-mm-details { flex-basis:240px; min-width:210px; padding:12px; } .rg-mm-toolbar { padding:10px; } }

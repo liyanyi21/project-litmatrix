@@ -1,0 +1,8 @@
+/* ResearchGrid table header resize grips. */
+.matrix-table th.rg-resizable-heading { padding-right:23px; }
+.rg-column-resizer { position:absolute; top:0; bottom:0; right:-1px; width:11px; z-index:5; cursor:col-resize; touch-action:none; user-select:none; }
+.rg-column-resizer::after { content:""; position:absolute; top:10px; bottom:10px; left:4px; width:2px; background:var(--line); border-radius:2px; }
+.rg-column-resizer:hover::after,.rg-column-resizer:focus-visible::after,.rg-column-resizer-active::after { background:var(--accent); width:3px; }
+.rg-column-resizer:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
+.rg-column-resizer[aria-disabled="true"] { cursor:wait; }
+.rg-column-resizing,.rg-column-resizing * { cursor:col-resize !important; user-select:none !important; }

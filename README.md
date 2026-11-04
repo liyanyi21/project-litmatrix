@@ -38,6 +38,17 @@
 - 搜索包含条目资料。已填 CSV 会附加所选资料列，保留所选顺序，并用 `[zotero:字段名]` 区分；导入时自动跳过这些只读资料列。待填模板仍仅包含原有文献识别信息和项目分析字段。
 - 标签显示与资料列选择保存在本机的各项目偏好中，暂不跨设备同步。项目分析内容和原文标签均独立于这些显示选择。
 
+## 调节列宽与思维导图
+
+- 拖动表头右侧的分隔线可调节列宽；选中分隔线后，方向键每次调整 10 像素，Shift+方向键调整 50 像素。双击分隔线或按 Home 恢复该列默认宽度；“恢复当前项目列宽”恢复整个当前项目。
+- 列宽按项目和字段身份保存：字段改名、调整顺序或暂时隐藏后再显示，仍使用原列宽。多项目表格各自记忆，调整一个分区不会影响其他分区。
+- 点击“思维导图”，按“当前操作项目 → 文献 → 分析字段”查看已有分析；多选分类时，可用顶部项目按钮切换导图。导图跟随当前搜索和分析状态筛选，有效字段的非空内容形成节点，长文在详情区完整显示。
+- 拖动节点可移动其整个分支；拖动空白处平移，首次以可读字号显示，使用缩放、“100%”、适应画布和折叠/展开按钮整理视图。节点也可通过键盘移动，布局、折叠和缩放在本机按项目保存，重新打开可继续使用。
+- 选择文献或字段可查看详情、打开原文或定位 Zotero 条目；双击字段或点击详情中的编辑入口打开同一份分析。保存后表格和导图同步更新；“回到表格”继续同一份编辑草稿。空字段可从文献详情中选择填写。
+- 导图展示已有项目分析，不额外调用 AI。布局、列宽保存在本机偏好中；文字修改仍保存到原来的项目分析子笔记。图中连接表示项目、文献与字段的结构关系。
+
+交互参考 [Better Notes 的思维导图与大纲](https://github.com/windingwind/zotero-better-notes/blob/4215a882e9f3528ddd4820c20b2c29e732c14e7e/src/elements/workspace/outlinePane.ts)，本插件使用独立的原生 DOM/SVG 实现。
+
 ## Zotero 设置入口
 
 打开 Zotero 的“设置”（Windows / Linux 部分版本称“首选项”），在左侧选择“研矩”。页面提供打开矩阵、编辑项目字段与模板的入口及版本信息。先在 Zotero 主窗口选择一个项目分类，然后进入相应设置。
@@ -122,7 +133,7 @@ npm test
 npm run build
 ```
 
-构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.8.0.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
+构建依赖 Python 3 标准库；产物为 `dist/research-grid-0.9.0.xpi`，另附对应源码包与 SHA256SUMS。在 Zotero 插件管理器选择“Install Plugin From File…”安装。插件不提供自动更新，后续使用新 XPI 手动更新。Zotero 强制要求提供 HTTPS 更新地址，因此清单使用本机端口 0 的不可连接地址作为占位；不会向远程服务检查更新。`content/updates.json` 为未来发布时可用的空清单模板。
 
 ## 文件组织
 
@@ -132,6 +143,8 @@ npm run build
 - `plugin/content/preferences.xhtml` / `preferences.js`：Zotero 原生设置页容器与控制器。
 - `plugin/content/fields.js` / `fields.css`：项目字段草稿、归档恢复与通用模板管理。
 - `plugin/content/project-picker.js` / `project-picker.css`：可搜索、折叠、多选的分类树与已选清单。
+- `plugin/content/column-widths.js` / `column-widths.css`：表头拖动与键盘列宽调整、稳定列身份。
+- `plugin/content/mindmap.js` / `mindmap.css`：项目思维导图、节点拖动、画布和布局。
 - `plugin/content/display.js` / `display.css`：项目标签显示和只读 Zotero 资料列选择、排序。
 - `plugin/content/ai.js`：OpenAI 兼容配置、请求、字段提示与严格结果解析。
 - `plugin/content/ai-dialog.js` / `ai-dialog.css`：来源/发送范围、AI 草稿预览与确认写入。
