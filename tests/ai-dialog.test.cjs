@@ -397,3 +397,48 @@ test('failed generation at a new amount keeps edited drafts and their original a
   assert.ok(f.document.querySelector('#rg-ai-error').textContent.includes('本次生成超时'));
   assert.equal(f.writes.length, 0);
 });
+
+test('single-paper AI preserves opening highlight snapshots and retains drafts on a formatting conflict', async () => {
+  const f = fixture();
+  f.row.values.findings = '论文已报告的结论';
+  f.row.highlights = { findings: [{ start: 0, end: 2, color: 'yellow' }], remarks: [] };
+  await f.manager.open(f.row);
+  f.row.highlights.findings[0].color = 'pink';
+  f.manager.selected = new Set(['findings']);
+  f.generate(async () => ({ findings: '人工核对后的事实草稿' }));
+  await f.manager.generate();
+  f.save(async (project, row, changes, expected, options) => {
+    assert.deepEqual(options, { expectedHighlights: { findings: [{ start: 0, end: 2, color: 'yellow' }] } });
+    assert.equal(options.highlights, undefined, 'text writes let the repository rebase the existing marks');
+    if (JSON.stringify(options.expectedHighlights.findings) !== JSON.stringify(row.highlights.findings)) {
+      throw new Error('高亮已在其他窗口修改');
+    }
+  });
+  assert.equal(await f.manager.apply(), false);
+  assert.equal(f.row.values.findings, '论文已报告的结论');
+  assert.equal(f.manager.drafts.get('findings'), '人工核对后的事实草稿');
+  assert.match(f.document.querySelector('#rg-ai-error').textContent, /高亮.*其他窗口/);
+});
+
+test('single-paper AI updates only saved formatting snapshots from the repository result for a later draft', async () => {
+  const f = fixture();
+  f.row.values.findings = 'OLD ending';
+  f.row.highlights = { findings: [{ start: 4, end: 10, color: 'green' }] };
+  await f.manager.open(f.row);
+  f.manager.selected = new Set(['findings']);
+  f.generate(async () => ({ findings: 'NEW LONG ending' }));
+  await f.manager.generate();
+  const savedMarks = [{ start: 9, end: 15, color: 'green' }];
+  f.save(async () => ({ values: { findings: 'NEW LONG ending' }, highlights: { findings: savedMarks } }));
+  assert.equal(await f.manager.apply(), true);
+  savedMarks[0].color = 'blue';
+  f.manager.selected = new Set(['findings']);
+  f.generate(async () => ({ findings: 'NEXT ending' }));
+  await f.manager.generate();
+  f.save(async (project, row, changes, expected, options) => {
+    assert.equal(expected.findings, 'NEW LONG ending');
+    assert.deepEqual(options.expectedHighlights, { findings: [{ start: 9, end: 15, color: 'green' }] });
+    return { values: { findings: changes.findings }, highlights: { findings: [{ start: 5, end: 11, color: 'green' }] } };
+  });
+  assert.equal(await f.manager.apply(), true);
+});

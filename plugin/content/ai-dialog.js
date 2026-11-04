@@ -2,6 +2,7 @@
 (function (root) {
   "use strict";
   const AI = root.RGAI || (typeof require === "function" ? require("./ai.js") : null);
+  const C = root.PLMCore || (typeof require === "function" ? require("./core.js") : null);
   const clone = value => JSON.parse(JSON.stringify(value));
   const signature = fields => JSON.stringify(fields.filter(f => !f.archived)
     .map(f => [f.id, f.label, f.requirement || ""]));
@@ -64,6 +65,8 @@
       this.fields = clone(this.options.getFields().filter(field => !field.archived));
       this.fieldSignature = signature(this.fields);
       this.expected = Object.fromEntries(this.fields.map(field => [field.id, String(row.values?.[field.id] || "")]));
+      this.expectedHighlights = Object.fromEntries(this.fields.map(field => [field.id,
+        C.normalizeHighlights(this.expected[field.id], row.highlights?.[field.id] || [])]));
       this.selected = new Set(this.fields.filter(field => !this.expected[field.id].trim()).map(field => field.id));
       this.drafts = new Map(); this.applySelected = new Set(); this.draftInfo = null;
       this.error = ""; this.status = ""; this.configError = "";
@@ -289,11 +292,15 @@
         if (!ids.length) throw new Error("请选择至少一个需要写入的草稿字段。");
         const changes = Object.fromEntries(ids.map(id => [id, this.drafts.get(id)]));
         const expected = Object.fromEntries(ids.map(id => [id, this.expected[id]]));
+        const expectedHighlights = Object.fromEntries(ids.map(id => [id, clone(this.expectedHighlights[id])]));
         this.saving = this.busy = true; this.error = ""; this.status = "正在写入当前项目笔记…"; this.render();
         try {
-          const result = await this.options.save(this.project, this.row, changes, expected);
+          const result = await this.options.save(this.project, this.row, changes, expected, { expectedHighlights });
           for (const id of ids) {
-            this.expected[id] = result?.values?.[id] ?? changes[id];
+            const nextValue = result?.values?.[id] ?? changes[id];
+            this.expectedHighlights[id] = C.normalizeHighlights(nextValue, result?.highlights?.[id]
+              ?? C.rebaseHighlights(this.expected[id], nextValue, this.expectedHighlights[id]));
+            this.expected[id] = nextValue;
             this.drafts.delete(id); this.applySelected.delete(id); this.selected.delete(id);
           }
           this.status = `已写入 ${ids.length} 个字段${this.drafts.size ? "，其余草稿尚未写入。" : "。"}`;

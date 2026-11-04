@@ -42,7 +42,7 @@ function fixture() {
   const manager = new Manager({ document, getProject: () => project, getFields: () => fields, getRows: () => rows,
     readFile: async () => { reads.push(true); return file(); },
     beforeOpen: () => allow,
-    save: async (p, operations) => { writes.push({ project: clone(p), operations: operations.map(o => ({ rowID: o.row.id, changes: clone(o.changes), expected: clone(o.expected) })) }); return save(p, operations); },
+    save: async (p, operations) => { writes.push({ project: clone(p), operations: operations.map(o => ({ rowID: o.row.id, changes: clone(o.changes), expected: clone(o.expected), expectedHighlights: clone(o.expectedHighlights) })) }); return save(p, operations); },
     notify: message => notifications.push(message) });
   const click = async selector => {
     const element = document.querySelector(selector);
@@ -93,7 +93,7 @@ test('parsing defaults to filling empty fields, protects existing analysis, and 
   assert.equal(f.document.querySelector('[data-table-row="1"]').disabled, true, 'skip selection must stay disabled after syncControls');
   await f.click('#rg-table-apply');
   assert.equal(f.writes.length, 1);
-  assert.deepEqual(f.writes[0].operations, [{ rowID: 1, changes: { findings: 'AI 新结论' }, expected: { findings: '' } }]);
+  assert.deepEqual(f.writes[0].operations, [{ rowID: 1, changes: { findings: 'AI 新结论' }, expected: { findings: '' }, expectedHighlights: { findings: [] } }]);
   assert.equal(f.rows()[0].values.remarks, '人工备注');
   assert.equal(f.rows()[1].values.findings, '已有结论');
   assert.equal(f.manager.dirty(), false);
@@ -253,4 +253,44 @@ test('canceling unsaved input asks for confirmation and never invokes persistenc
   f.window.confirm = () => true;
   assert.equal(f.manager.close(), true);
   assert.equal(f.writes.length, 0);
+});
+
+test('CSV preview rebuilds retain opening text and highlight snapshots while saves target the original row', async () => {
+  const f = fixture(), row = f.rows()[1];
+  row.highlights = { findings: [{ start: 0, end: 2, color: 'yellow' }], remarks: [] };
+  await f.manager.open();
+  row.values.findings = '另一个窗口的新结论';
+  row.highlights.findings[0].color = 'blue';
+  f.paste(csv([['测试论文二', '导入的事实', '']]));
+  f.manager.parse();
+  f.input('#rg-table-overwrite', true, 'change');
+  f.manager.rebuild();
+  assert.deepEqual(f.manager.plan.rows[0].expected, { findings: '已有结论' });
+  assert.deepEqual(f.manager.plan.rows[0].expectedHighlights, { findings: [{ start: 0, end: 2, color: 'yellow' }] });
+  f.setSave(async (project, operations) => {
+    assert.equal(operations[0].row, row, 'saved records update the live matrix row');
+    assert.equal(operations[0].highlights, undefined, 'CSV changes preserve and rebase marks in the repository');
+    throw new Error('字段或高亮已在其他窗口修改');
+  });
+  assert.equal(await f.manager.apply(), false);
+  assert.deepEqual(f.writes[0].operations[0].expectedHighlights, { findings: [{ start: 0, end: 2, color: 'yellow' }] });
+  assert.equal(f.manager.selectedRows().length, 1);
+  assert.equal(row.values.findings, '另一个窗口的新结论');
+  assert.match(f.document.querySelector('#rg-table-error').textContent, /高亮.*其他窗口/);
+});
+
+test('CSV import snapshots empty formatting so later highlighting also conflicts without a text change', async () => {
+  const f = fixture(), row = f.rows()[1];
+  await f.manager.open();
+  f.paste(csv([['测试论文二', '新结论', '']])); f.manager.parse();
+  f.input('#rg-table-overwrite', true, 'change');
+  row.highlights = { findings: [{ start: 0, end: 2, color: 'pink' }] };
+  f.setSave(async (project, operations) => {
+    assert.deepEqual(operations[0].expectedHighlights, { findings: [] });
+    throw new Error('高亮快照冲突');
+  });
+  assert.equal(await f.manager.apply(), false);
+  assert.equal(f.manager.plan.rows[0].expected.findings, '已有结论');
+  assert.deepEqual(f.manager.plan.rows[0].expectedHighlights, { findings: [] });
+  assert.equal(row.highlights.findings[0].color, 'pink');
 });

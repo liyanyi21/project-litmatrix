@@ -707,3 +707,127 @@ test('import honors recursive membership and refuses deleted or replaced project
   f.Z.Collections.getByLibrary = () => [{ ...f.a, key: 'REPLACED' }];
   await assert.rejects(f.repo.importRows(f.projectA, [importOperation(f.row)]), /项目分类已变化/);
 });
+
+test('highlight-only saves persist in project notes, load back into matrix rows and remain project independent', async () => {
+  const f = fixture();
+  const text = '客观事实与原文证据';
+  await f.repo.saveField(f.projectA, f.row, 'findings', text, '');
+  await f.repo.saveField(f.projectB, f.row, 'findings', text, '');
+  const ranges = [{ start: 0, end: 4, color: 'yellow' }];
+  const result = await f.repo.saveField(f.projectA, f.row, 'findings', text, text,
+    { highlights: ranges, expectedHighlights: [] });
+  assert.equal(result.values.findings, text);
+  assert.deepEqual(result.highlights.findings, ranges);
+  assert.deepEqual((await f.repo.loadProject(f.projectA))[0].highlights.findings, ranges);
+  assert.deepEqual((await f.repo.noteFor(f.parent, f.projectB)).highlights.findings, []);
+  assert.equal(f.parent.notes.length, 2);
+  const cleared = await f.repo.saveField(f.projectA, f.row, 'findings', text, text,
+    { highlights: [], expectedHighlights: ranges });
+  assert.equal(cleared.values.findings, text);
+  assert.deepEqual(cleared.highlights.findings, []);
+});
+
+test('formatting snapshots reject stale AI text writes and stale highlight changes without altering newer marks', async () => {
+  const f = fixture(), text = '原文结果待阅读';
+  await f.repo.saveField(f.projectA, f.row, 'findings', text, '');
+  const stale = { ...f.row, highlights: { findings: [] } };
+  const ranges = [{ start: 0, end: 4, color: 'blue' }];
+  await f.repo.saveField(f.projectA, f.row, 'findings', text, text, { highlights: ranges, expectedHighlights: [] });
+  await assert.rejects(f.repo.saveFields(f.projectA, stale, { findings: '过期 AI 内容' }, { findings: text }), /高亮已在其他窗口/);
+  await assert.rejects(f.repo.saveField(f.projectA, f.row, 'findings', text, text,
+    { highlights: [{ start: 0, end: 2, color: 'pink' }], expectedHighlights: [] }), /高亮已在其他窗口/);
+  assert.deepEqual((await f.repo.noteFor(f.parent, f.projectA)).highlights.findings, ranges);
+});
+
+test('text edits rebase unaffected formatting and return a full formatting map including untouched fields', async () => {
+  const f = fixture(), before = 'before MID after';
+  const first = await f.repo.saveFields(f.projectA, f.row, { findings: before, remarks: '原备注' }, { findings: '', remarks: '' },
+    { highlights: { findings: [{ start: 11, end: 16, color: 'green' }], remarks: [{ start: 0, end: 1, color: 'pink' }] },
+      expectedHighlights: { findings: [], remarks: [] } });
+  const loaded = { ...f.row, highlights: first.highlights };
+  const updated = await f.repo.saveField(f.projectA, loaded, 'findings', 'before NEWLONG after', before);
+  assert.deepEqual(updated.highlights.findings, [{ start: 15, end: 20, color: 'green' }]);
+  assert.deepEqual(updated.highlights.remarks, [{ start: 0, end: 1, color: 'pink' }]);
+  assert.equal(updated.values.remarks, '原备注');
+});
+
+test('highlight changes with surrounding whitespace compare and persist against the trimmed plain value', async () => {
+  const f = fixture();
+  await f.repo.saveField(f.projectA, f.row, 'remarks', '客观事实', '');
+  const saved = await f.repo.saveField(f.projectA, f.row, 'remarks', '  客观事实  ', '客观事实',
+    { highlights: [{ start: 2, end: 6, color: 'blue' }], expectedHighlights: [] });
+  assert.equal(saved.values.remarks, '客观事实');
+  assert.deepEqual(saved.highlights.remarks, [{ start: 0, end: 4, color: 'blue' }]);
+});
+
+test('formatting options are copied before awaiting the transaction and cannot mutate a conflict snapshot', async () => {
+  const f = fixture(), text = '事实与结果';
+  await f.repo.saveField(f.projectA, f.row, 'findings', text, '');
+  const options = { highlights: [{ start: 0, end: 2, color: 'yellow' }], expectedHighlights: [] };
+  f.Z.DB.executeTransaction = async callback => {
+    options.highlights[0].color = 'pink'; options.highlights[0].end = 5;
+    options.expectedHighlights.push({ start: 2, end: 4, color: 'green' });
+    return callback();
+  };
+  const result = await f.repo.saveField(f.projectA, f.row, 'findings', text, text, options);
+  assert.deepEqual(result.highlights.findings, [{ start: 0, end: 2, color: 'yellow' }]);
+});
+
+test('malformed or foreign highlight fields are rejected before opening a transaction', async () => {
+  const f = fixture();
+  let transactions = 0;
+  f.Z.DB.executeTransaction = async callback => { transactions++; return callback(); };
+  for (const options of [
+    { highlights: { findings: [{ start: 0, end: 2, color: 'url(x)' }] } },
+    { highlights: { unknown: [] } }, { highlights: [] },
+    { expectedHighlights: { findings: [{ start: 0, end: 1, color: 'blue' }] } },
+  ]) await assert.rejects(f.repo.saveFields(f.projectA, f.row, { findings: '内容' }, { findings: '' }, options), /高亮/);
+  assert.equal(transactions, 0);
+  assert.equal(f.parent.notes.length, 0);
+});
+
+test('an aggregate import with a later stale highlight rejects every selected paper before any write', async () => {
+  const f = importFixture();
+  const text = '第二篇事实';
+  await f.repo.saveField(f.projectA, f.secondRow, 'findings', text, '');
+  await f.repo.saveField(f.projectA, f.secondRow, 'findings', text, text,
+    { highlights: [{ start: 0, end: 3, color: 'blue' }], expectedHighlights: [] });
+  await assert.rejects(f.repo.importRows(f.projectA, [
+    importOperation(f.row),
+    { ...importOperation(f.secondRow, { findings: '过期的新总结' }, { findings: text }), expectedHighlights: { findings: [] } },
+  ]), /没有导入/);
+  assert.equal(f.parent.notes.length, 0);
+  assert.deepEqual((await f.repo.noteFor(f.second, f.projectA)).highlights.findings, [{ start: 0, end: 3, color: 'blue' }]);
+});
+
+test('aggregate formatting saves return durable marks and rollback restores the prior highlighted HTML', async () => {
+  const f = importFixture();
+  await f.repo.saveField(f.projectA, f.row, 'remarks', '第一篇原值', '', { highlights: [{ start: 0, end: 3, color: 'yellow' }] });
+  await f.repo.saveField(f.projectA, f.secondRow, 'remarks', '第二篇原值', '');
+  const first = await f.repo.noteFor(f.parent, f.projectA);
+  const originalHTML = first.note.getNote();
+  installRollbackDatabase(f, f.second.id);
+  const operations = [
+    { ...importOperation(f.row, { remarks: '第一篇原值' }, { remarks: '第一篇原值' }), highlights: { remarks: [{ start: 3, end: 5, color: 'green' }] }, expectedHighlights: { remarks: first.highlights.remarks } },
+    importOperation(f.secondRow, { remarks: '第二篇新内容' }, { remarks: '第二篇原值' }),
+  ];
+  await assert.rejects(f.repo.importRows(f.projectA, operations), /later SQLite write failure/);
+  assert.equal(first.note.getNote(), originalHTML);
+  assert.deepEqual((await f.repo.noteFor(f.parent, f.projectA)).highlights.remarks, [{ start: 0, end: 3, color: 'yellow' }]);
+  const retry = await f.repo.importRows(f.projectA, operations);
+  assert.equal(retry.importedRows, 2);
+  assert.deepEqual(retry.records[0].highlights.remarks, [{ start: 3, end: 5, color: 'green' }]);
+});
+
+test('a failed single formatting save reloads caches and can be retried with the original text and marks', async () => {
+  const f = fixture(), text = '事实与结果';
+  await f.repo.saveField(f.projectA, f.row, 'findings', text, '');
+  const old = await f.repo.noteFor(f.parent, f.projectA);
+  const originalHTML = old.note.getNote();
+  installRollbackDatabase(f, f.parent.id);
+  const options = { highlights: [{ start: 0, end: 2, color: 'yellow' }], expectedHighlights: [] };
+  await assert.rejects(f.repo.saveField(f.projectA, f.row, 'findings', text, text, options), /later SQLite write failure/);
+  assert.equal(old.note.getNote(), originalHTML);
+  assert.deepEqual((await f.repo.noteFor(f.parent, f.projectA)).highlights.findings, []);
+  assert.deepEqual((await f.repo.saveField(f.projectA, f.row, 'findings', text, text, options)).highlights.findings, options.highlights);
+});

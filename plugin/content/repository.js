@@ -57,7 +57,7 @@
     }
     async noteFor(paper, project) {
       const fields = project.fields || this.C.FIELDS;
-      if (!paper.isRegularItem()) return { note: null, values: this.C.blankValues(fields) };
+      if (!paper.isRegularItem()) return { note: null, values: this.C.blankValues(fields), highlights: Object.fromEntries(fields.map(field => [field.id, []])) };
       await this.Z.Items.loadDataTypes([paper], ["childItems"]);
       const notes = await this.Z.Items.getAsync(paper.getNotes());
       await this.Z.Items.loadDataTypes(notes.filter(Boolean), ["note", "tags"]);
@@ -66,7 +66,9 @@
         n.libraryID === project.libraryID && n.getTags().some(t => t.tag === marker));
       if (matches.length > 1) throw new Error("此文献有多份同项目笔记，请在 Zotero 中合并后再编辑。");
       const note = matches[0] || null;
-      return { note, values: note ? this.C.parseNote(note.getNote(), this.Parser, fields).values : this.C.blankValues(fields) };
+      const parsed = note ? this.C.parseNote(note.getNote(), this.Parser, fields) : null;
+      return { note, values: parsed?.values || this.C.blankValues(fields),
+        highlights: parsed?.highlights || Object.fromEntries(fields.map(field => [field.id, []])) };
     }
     info(paper, library) {
       const field = name => { try { return paper.getField(name) || ""; } catch (_) { return ""; } };
@@ -94,7 +96,7 @@
       await this.Z.Items.loadDataTypes(papers, ["creators", "itemData", "tags", "childItems"]);
       const rows = [];
       for (const paper of papers) {
-        const row = { ...this.info(paper, project.library), values: this.C.blankValues(project.fields), annotations: [],
+        const row = { ...this.info(paper, project.library), values: this.C.blankValues(project.fields), highlights: {}, annotations: [],
           noteKey: null, noteURL: "", noteError: "", pdfURL: "", attachmentID: null };
         const attachments = paper.isAttachment() ? [paper] : await this.Z.Items.getAsync(paper.getAttachments());
         const live = attachments.filter(a => a && !a.deleted);
@@ -118,6 +120,7 @@
         try {
           const record = await this.noteFor(paper, project);
           row.values = record.values;
+          row.highlights = record.highlights;
           row.noteKey = record.note?.key || null;
           row.noteURL = row.noteKey ? this.C.itemLink(project.library, row.noteKey) : "";
         } catch (e) { row.noteError = e.message; row.editable = false; }
@@ -129,10 +132,53 @@
       const doc = new this.Parser().parseFromString(`<html><body>${html}</body></html>`, "text/html");
       return [...doc.body.childNodes].map(this.C.plainNode).join("").trim();
     }
-    async saveField(project, row, fieldID, value, expected) {
-      return this.saveFields(project, row, { [fieldID]: value }, { [fieldID]: expected });
+    async saveField(project, row, fieldID, value, expected, options = {}) {
+      return this.saveFields(project, row, { [fieldID]: value }, { [fieldID]: expected }, {
+        highlights: options.highlights === undefined ? undefined : { [fieldID]: options.highlights },
+        expectedHighlights: options.expectedHighlights === undefined ? undefined : { [fieldID]: options.expectedHighlights },
+      });
     }
-    async saveFields(project, row, changes, expected) {
+    // Capture formatting along with text before awaiting the transaction. A
+    // highlight-only edit must conflict just like a concurrent text edit.
+    formattingSnapshot(row, entries, expected, options = {}) {
+      if (!options || typeof options !== "object" || Array.isArray(options)) throw new Error("高亮保存选项无效。");
+      const desired = Object.create(null), originals = Object.create(null);
+      for (const name of ["highlights", "expectedHighlights"]) {
+        if (options[name] !== undefined && (!options[name] || typeof options[name] !== "object" || Array.isArray(options[name]))) {
+          throw new Error("高亮字段格式无效。");
+        }
+        if (options[name] && Object.keys(options[name]).some(id => !entries.some(([fieldID]) => fieldID === id))) {
+          throw new Error("高亮包含未选择的字段。");
+        }
+      }
+      for (const [id, value] of entries) {
+        if (options.highlights && Object.prototype.hasOwnProperty.call(options.highlights, id)) {
+          desired[id] = this.C.normalizeHighlights(value, options.highlights[id]);
+        }
+        if (options.expectedHighlights && Object.prototype.hasOwnProperty.call(options.expectedHighlights, id)) {
+          originals[id] = this.C.normalizeHighlights(expected[id], options.expectedHighlights[id]);
+        } else if (row.highlights && typeof row.highlights === "object") {
+          originals[id] = this.C.normalizeHighlights(expected[id], row.highlights[id] || []);
+        }
+      }
+      return { desired, originals };
+    }
+    formattingConflicts(fresh, formatting) {
+      return Object.entries(formatting.originals).some(([id, ranges]) =>
+        JSON.stringify(fresh.highlights[id] || []) !== JSON.stringify(ranges));
+    }
+    trimmedHighlights(value, ranges) {
+      const left = value.length - value.trimStart().length, text = value.trim();
+      return this.C.normalizeHighlights(text, ranges.map(range => ({ ...range,
+        start: Math.max(0, range.start - left), end: Math.min(text.length, range.end - left),
+      })).filter(range => range.start < range.end));
+    }
+    changedFields(entries, originals, fresh, formatting) {
+      return entries.filter(([id, value]) => value.trim() !== originals[id].trim()
+        || (Object.prototype.hasOwnProperty.call(formatting.desired, id)
+          && JSON.stringify(this.trimmedHighlights(value, formatting.desired[id])) !== JSON.stringify(fresh.highlights[id] || [])));
+    }
+    async saveFields(project, row, changes, expected, options = {}) {
       const fields = (project.fields || this.C.FIELDS).map(f => ({ ...f, aliases: [...(f.aliases || [])] }));
       const entries = Object.entries(changes);
       if (!entries.length) throw new Error("请先选择需要写入的字段。");
@@ -142,9 +188,11 @@
         if (typeof value !== "string" || typeof expected[id] !== "string") throw new Error("字段内容或原值格式不正确。");
       }
       const originals = Object.fromEntries(entries.map(([id]) => [id, expected[id]]));
+      const formatting = this.formattingSnapshot(row, entries, originals, options);
       project = { ...project, fields };
       if (!row.editable || !this.Z.Libraries.get(project.libraryID)?.editable) throw new Error("此文献不能编辑项目笔记。");
       let saved;
+      const touched = [];
       await this.Z.DB.executeTransaction(async () => {
         const paper = await this.Z.Items.getAsync(row.id);
         if (!paper || paper.deleted || paper.libraryID !== project.libraryID || paper.key !== row.key) {
@@ -152,28 +200,51 @@
         }
         if (paper.isEditable && !paper.isEditable()) throw new Error("此文献当前不可编辑。");
         const fresh = await this.noteFor(paper, project);
-        // Check every selected field before writing anything: AI drafts apply atomically.
-        if (entries.some(([id]) => fresh.values[id] !== originals[id])) {
-          throw new Error("选中的字段已在其他窗口或设备中修改。请保留草稿，关闭预览并刷新后核对。");
+        if (entries.some(([id]) => fresh.values[id] !== originals[id]) || this.formattingConflicts(fresh, formatting)) {
+          throw new Error("选中的字段或高亮已在其他窗口或设备中修改。请保留草稿，关闭预览并刷新后核对。");
         }
-        const changed = entries.filter(([id, value]) => value.trim() !== originals[id].trim());
+        const changed = this.changedFields(entries, originals, fresh, formatting);
         if (!changed.length) { saved = fresh; return; }
         let note = fresh.note;
+        const existing = !!note;
         if (!note) {
           note = new this.Z.Item("note");
           note.libraryID = project.libraryID;
           note.parentID = paper.id;
           note.addTag(this.C.noteTag(project.id));
-          note.setNote(this.C.createNote(project.name, Object.fromEntries(changed), fields));
+          touched.push({ note, paper, existing });
+          note.setNote(this.C.createNote(project.name, Object.fromEntries(changed), fields, formatting.desired));
         } else {
           let html = note.getNote();
-          for (const [id, value] of changed) html = this.C.updateNote(html, id, value, this.Parser, fields);
+          for (const [id, value] of changed) html = this.C.updateNote(html, id, value, this.Parser, fields, formatting.desired[id]);
+          touched.push({ note, paper, existing });
           note.setNote(html);
         }
         await note.save();
-        saved = { note, values: this.C.parseNote(note.getNote(), this.Parser, fields).values };
+        const parsed = this.C.parseNote(note.getNote(), this.Parser, fields);
+        saved = { note, values: parsed.values, highlights: parsed.highlights };
+      }).catch(async error => {
+        if (error.committed) { this.Z.logError?.(error); return; }
+        await this.recoverRolledBackWrites(touched);
+        throw error;
       });
       return saved;
+    }
+    async recoverRolledBackWrites(touched) {
+      const reload = async (item, types) => {
+        if (typeof item.reload === "function") await item.reload(types, true);
+        else if (typeof this.Z.Items.reload === "function") await this.Z.Items.reload([item.id], types, true);
+        else this.Z.Items.unload?.(item.id);
+      };
+      for (const { note, existing } of touched) {
+        if (!existing) continue;
+        try { await reload(note, null); note._clearChanged?.(); }
+        catch (recoveryError) { this.Z.logError?.(recoveryError); this.Z.Items.unload?.(note.id); }
+      }
+      for (const paper of new Set(touched.map(record => record.paper))) {
+        try { await reload(paper, ["primaryData", "childItems"]); paper.clearBestAttachmentState?.(); }
+        catch (recoveryError) { this.Z.logError?.(recoveryError); this.Z.Items.unload?.(paper.id); }
+      }
     }
     async importRows(project, operations) {
       if (!project || typeof project.id !== "string" || !project.id || !Number.isInteger(project.libraryID)) {
@@ -215,7 +286,10 @@
           if (totalChars > 10000000) throw new Error("导入内容过长，请分批导入。");
           originals[id] = operation.expected[id];
         }
-        return { row, identity, entries, originals };
+        const formatting = this.formattingSnapshot(row, entries, originals, {
+          highlights: operation.highlights, expectedHighlights: operation.expectedHighlights,
+        });
+        return { row, identity, entries, originals, formatting };
       });
       if (!this.Z.Libraries.get(project.libraryID)?.editable) throw new Error("当前文献库不能编辑项目笔记。");
       const records = [];
@@ -235,7 +309,7 @@
         }
         const staged = [];
         for (const snapshot of snapshots) {
-          const { identity, entries, originals } = snapshot;
+          const { identity, entries, originals, formatting } = snapshot;
           const paper = await this.Z.Items.getAsync(identity.id);
           if (!paper || paper.deleted || paper.key !== identity.key || paper.libraryID !== identity.libraryID) {
             throw new Error("导入文献已删除或发生变化，请关闭预览并刷新后重试。");
@@ -245,16 +319,16 @@
           }
           const fresh = await this.noteFor(paper, project);
           if (fresh.note?.isEditable && !fresh.note.isEditable()) throw new Error("导入包含不可编辑的项目笔记。");
-          if (entries.some(([id]) => fresh.values[id] !== originals[id])) {
+          if (entries.some(([id]) => fresh.values[id] !== originals[id]) || this.formattingConflicts(fresh, formatting)) {
             throw new Error("部分字段已在其他窗口或设备中修改，本次没有导入。请保留表格，关闭预览并刷新后核对。");
           }
-          const changed = entries.filter(([id, value]) => value.trim() !== originals[id].trim());
+          const changed = this.changedFields(entries, originals, fresh, formatting);
           let html = null;
           if (changed.length) {
             if (fresh.note) {
               html = fresh.note.getNote();
-              for (const [id, value] of changed) html = this.C.updateNote(html, id, value, this.Parser, fields);
-            } else html = this.C.createNote(project.name, Object.fromEntries(changed), fields);
+              for (const [id, value] of changed) html = this.C.updateNote(html, id, value, this.Parser, fields, formatting.desired[id]);
+            } else html = this.C.createNote(project.name, Object.fromEntries(changed), fields, formatting.desired);
             // Validate every resulting note before any Item object is changed.
             this.C.parseNote(html, this.Parser, fields);
           }
@@ -264,7 +338,7 @@
         // fails. Do not call saveFields() here: every paper belongs to this one
         // shared transaction and all conflicts have already been checked.
         for (const stage of staged) {
-          let { note, values } = stage.fresh;
+          let { note, values, highlights } = stage.fresh;
           if (stage.changed.length) {
             const existing = !!note;
             if (!note) {
@@ -276,11 +350,12 @@
             touched.push({ note, paper: stage.paper, existing });
             note.setNote(stage.html);
             await note.save();
-            values = this.C.parseNote(note.getNote(), this.Parser, fields).values;
+            const parsed = this.C.parseNote(note.getNote(), this.Parser, fields);
+            values = parsed.values; highlights = parsed.highlights;
             importedRows++;
             changedFields += stage.changed.length;
           }
-          records.push({ row: stage.row, note, values });
+          records.push({ row: stage.row, note, values, highlights });
         }
       }).catch(async error => {
         // Zotero marks errors raised after SQLite committed. The completed
@@ -289,37 +364,10 @@
           this.Z.logError?.(error);
           return;
         }
-        // A rejected transaction has already rolled back SQLite, but Zotero's
-        // cached existing Item objects can still contain a preceding save's
-        // imported text. Use the same forced reload as Zotero's save-error
-        // recovery, including the parent childItems cache refreshed by save().
-        // New Items are unloaded by Zotero's own rollback callback.
-        {
-          const reload = async (item, types) => {
-            if (typeof item.reload === "function") await item.reload(types, true);
-            else if (typeof this.Z.Items.reload === "function") await this.Z.Items.reload([item.id], types, true);
-            else this.Z.Items.unload?.(item.id);
-          };
-          for (const { note, existing } of touched) {
-            if (!existing) continue;
-            try {
-              await reload(note, null);
-              note._clearChanged?.();
-            } catch (recoveryError) {
-              this.Z.logError?.(recoveryError);
-              this.Z.Items.unload?.(note.id);
-            }
-          }
-          for (const paper of new Set(touched.map(record => record.paper))) {
-            try {
-              await reload(paper, ["primaryData", "childItems"]);
-              paper.clearBestAttachmentState?.();
-            } catch (recoveryError) {
-              this.Z.logError?.(recoveryError);
-              this.Z.Items.unload?.(paper.id);
-            }
-          }
-        }
+        // SQLite rollback does not restore cached Item objects. New Items are
+        // unloaded by Zotero's own rollback callback; reload existing notes and
+        // parent childItems so later writes cannot persist phantom formatting.
+        await this.recoverRolledBackWrites(touched);
         throw error;
       });
       return { records, importedRows, changedFields };

@@ -9,7 +9,7 @@ const repo = new PLMRepository(Z);
 const PREF = "extensions.projectlitmatrix.ui";
 const $ = selector => document.querySelector(selector);
 const state = { projects: [], project: null, rows: [], shown: [], loading: false,
-  generation: 0, pendingReload: false, editing: null, saving: false, preferences: { version: 1, projects: {} } };
+  generation: 0, selected: new Set(), pendingReload: false, editing: null, saving: false, preferences: { version: 1, projects: {} } };
 
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
@@ -55,11 +55,13 @@ function savePrefs(patch = {}) {
 }
 let fieldManager;
 let aiManager;
+let batchManager;
+let highlightManager;
 let tableManager;
 let templateExport;
 function showColumns() {
   if (!state.project || state.loading) return;
-  if (aiManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) { toast("请先关闭当前 AI 或表格窗口。"); return; }
+  if (aiManager?.isOpen() || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) { toast("请先关闭当前 AI 或表格窗口。"); return; }
   if (!fieldManager) fieldManager = new RGFields.Manager({
     document, getProject: () => state.project, getFields: allFields,
     getTemplates: () => state.preferences.templates || [],
@@ -78,41 +80,105 @@ function showColumns() {
   });
   return fieldManager.open().catch(failure);
 }
+async function generateAI({ config, project, fields, paper, source, signal }) {
+  const current = () => RGAI.normalizeConfig(new RGAI.ConfigStore(Z).getConfig());
+  const snapshot = RGAI.normalizeConfig(config);
+  const connectionSettings = value => {
+    const { summaryDetail, ...settings } = value;
+    return JSON.stringify(settings);
+  };
+  // The dialog may override its summary length for this request. Provider,
+  // model, source and transport limits must still match the saved settings.
+  const unchanged = () => connectionSettings(current()) === connectionSettings(snapshot);
+  if (!unchanged()) throw new Error("API 设置已变化，请点击“刷新 API 设置”后再生成。");
+  let key;
+  try { key = await Z.ProjectLitMatrix.credentials.getKey(RGAI.endpointFor(snapshot.baseURL)); }
+  catch (_) { throw new Error("无法读取当前 API 地址的密钥，请到研矩设置检查密钥存储。"); }
+  if (!unchanged()) throw new Error("API 设置已变化，请刷新设置后重试。");
+  const messages = RGAI.buildMessages({ project, fields, paper, source, summaryDetail: snapshot.summaryDetail });
+  const result = await RGAI.request(snapshot, key, messages, { signal, fetchImpl: (...args) => window.fetch(...args) });
+  return RGAI.parseResult(result.content, fields);
+}
+function updateSavedRecord(project, record) {
+  const targets = new Set([record.row, ...state.rows.filter(r => r.id === record.row?.id && r.key === record.row?.key)]);
+  for (const target of targets) {
+    if (!target) continue;
+    target.values = record.values;
+    target.highlights = record.highlights || {};
+    target.noteKey = record.note?.key || null;
+    target.noteURL = target.noteKey ? C.itemLink(project.library, target.noteKey) : "";
+  }
+}
+const rowIdentity = row => `${row.libraryID}:${row.key}`;
+function selectedRows() { return state.rows.filter(row => state.selected.has(rowIdentity(row))); }
+function syncSelection() {
+  const rows = selectedRows();
+  const shown = new Set(state.shown.map(rowIdentity));
+  const hidden = rows.filter(row => !shown.has(rowIdentity(row))).length;
+  $("#selectionCount").textContent = `已选 ${rows.length} 篇${hidden ? `（当前筛选外 ${hidden} 篇）` : ""}`;
+  $("#batchAI").textContent = `批量 AI 总结（${rows.length}）`;
+  $("#batchAI").disabled = state.loading || !rows.length;
+  $("#clearSelection").disabled = state.loading || !rows.length;
+  $("#selectShown").disabled = state.loading || !state.shown.length;
+  $("#selectZotero").disabled = state.loading || !state.project;
+  for (const box of $("#grid tbody").querySelectorAll("[data-paper-select]")) {
+    box.checked = state.selected.has(box.dataset.paperSelect);
+  }
+}
+function selectShown() {
+  if (state.loading) return;
+  for (const row of state.shown) state.selected.add(rowIdentity(row));
+  syncSelection();
+}
+function selectFromZotero() {
+  if (state.loading || !state.project) return;
+  const items = repo.mainWindow?.()?.ZoteroPane?.getSelectedItems?.() || [];
+  const ids = new Set(items.map(item => item.id));
+  const matched = state.rows.filter(row => ids.has(row.id));
+  if (!matched.length) { toast("请先在 Zotero 主窗口选中当前项目的文献。"); return; }
+  for (const row of matched) state.selected.add(rowIdentity(row));
+  syncSelection(); toast(`已勾选 Zotero 中所选的 ${matched.length} 篇项目文献`);
+}
+async function showBatchAI() {
+  if (!state.project || state.loading || state.saving || !selectedRows().length) return;
+  if (aiManager?.isOpen() || fieldManager?.dialog?.open || batchManager?.isOpen() || tableManager?.isOpen() || $("#templateDialog").open) return;
+  highlightManager?.clear();
+  if (!batchManager) batchManager = new RGAIBatch.Manager({
+    document, getProject: () => state.project ? { ...state.project, recursive: prefs().recursive } : null,
+    getFields: activeFields, getConfig: () => new RGAI.ConfigStore(Z).getConfig(),
+    getSource: (paper, options) => repo.paperSource(paper, options), generate: generateAI,
+    beforeOpen: () => !state.editing || closeEditor(),
+    openSettings: () => Z.ProjectLitMatrix.openSettings(),
+    save: async (project, operations) => {
+      state.saving = true;
+      try {
+        const result = await repo.importRows({ ...project, fields: allFields() }, operations);
+        for (const record of result.records) updateSavedRecord(project, record);
+        render(); $("#saveStatus").textContent = "批量 AI 草稿已写入选中字段";
+        return result;
+      } finally { state.saving = false; if (state.pendingReload) scheduleReload(); }
+    }, notify: toast,
+  });
+  return batchManager.open(selectedRows());
+}
 async function showAI(row) {
   if (!state.project || state.loading || state.saving) return;
-  if (fieldManager?.dialog?.open || tableManager?.isOpen()) return;
+  if (fieldManager?.dialog?.open || batchManager?.isOpen() || tableManager?.isOpen()) return;
   if (!aiManager) aiManager = new RGAIDialog.Manager({
     document, getProject: () => state.project, getFields: activeFields,
     beforeOpen: () => !state.editing || closeEditor(),
     getConfig: () => new RGAI.ConfigStore(Z).getConfig(),
     getSource: (paper, options) => repo.paperSource(paper, options),
     openSettings: () => Z.ProjectLitMatrix.openSettings(),
-    generate: async ({ config, project, fields, paper, source, signal }) => {
-      const current = () => RGAI.normalizeConfig(new RGAI.ConfigStore(Z).getConfig());
-      const snapshot = RGAI.normalizeConfig(config);
-      const connectionSettings = value => {
-        const { summaryDetail, ...settings } = value;
-        return JSON.stringify(settings);
-      };
-      // The dialog may override its summary length for this request. Provider,
-      // model, source and transport limits must still match the saved settings.
-      const unchanged = () => connectionSettings(current()) === connectionSettings(snapshot);
-      if (!unchanged()) throw new Error("API 设置已变化，请点击“刷新 API 设置”后再生成。");
-      let key;
-      try { key = await Z.ProjectLitMatrix.credentials.getKey(RGAI.endpointFor(snapshot.baseURL)); }
-      catch (_) { throw new Error("无法读取当前 API 地址的密钥，请到研矩设置检查密钥存储。"); }
-      if (!unchanged()) throw new Error("API 设置已变化，请刷新设置后重试。");
-      const messages = RGAI.buildMessages({ project, fields, paper, source, summaryDetail: snapshot.summaryDetail });
-      const result = await RGAI.request(snapshot, key, messages, { signal, fetchImpl: (...args) => window.fetch(...args) });
-      return RGAI.parseResult(result.content, fields);
-    },
-    save: async (project, row, changes, expected) => {
+    generate: generateAI,
+    save: async (project, row, changes, expected, options = {}) => {
       state.saving = true;
       try {
-        const record = await repo.saveFields(project, row, changes, expected);
+        const record = await repo.saveFields(project, row, changes, expected, options);
         const targets = new Set([row, ...state.rows.filter(r => r.id === row.id && r.key === row.key)]);
         for (const target of targets) {
           target.values = record.values;
+          target.highlights = record.highlights || {};
           target.noteKey = record.note?.key || null;
           target.noteURL = target.noteKey ? C.itemLink(project.library, target.noteKey) : "";
         }
@@ -171,7 +237,7 @@ async function selectProject(target) {
     toast("请先关闭表格导入或模板导出窗口，再切换项目。");
     return false;
   }
-  if (aiManager?.isOpen()) {
+  if (aiManager?.isOpen() || batchManager?.isOpen()) {
     if (project?.id === state.project?.id) return true;
     $("#project").value = state.project?.id || "";
     toast("请先关闭 AI 总结窗口，再切换项目。");
@@ -188,9 +254,12 @@ async function selectProject(target) {
     if (target) throw new Error("找不到这个分类，请刷新项目列表。");
     state.generation++;
     state.project = null;
+    state.selected.clear();
     state.rows = [];
     syncControls(); render(); return;
   }
+  if (state.project?.id !== project.id) state.selected.clear();
+  highlightManager?.clear();
   state.project = project;
   $("#project").value = project.id;
   syncControls();
@@ -200,6 +269,7 @@ async function selectProject(target) {
 async function reload() {
   if (state.editing || state.saving) { state.pendingReload = true; return; }
   const generation = ++state.generation;
+  highlightManager?.clear();
   refreshChoices();
   if (state.project) state.project = state.projects.find(p => p.id === state.project.id) || null;
   if (!state.project) {
@@ -216,6 +286,8 @@ async function reload() {
     const rows = await repo.loadProject(project, prefs().recursive);
     if (generation !== state.generation) return;
     state.rows = rows;
+    const live = new Set(rows.map(rowIdentity));
+    state.selected = new Set([...state.selected].filter(id => live.has(id)));
     setBusy(false);
     syncControls();
     render();
@@ -236,6 +308,7 @@ async function reload() {
 }
 function render() {
   if (state.editing) return;
+  highlightManager?.clear();
   const scroll = $("#results").scrollTop;
   const p = prefs();
   state.shown = C.filterRows(state.rows, $("#search").value, $("#analysisState").value, activeFields());
@@ -263,7 +336,14 @@ function render() {
     ...fields.map(f => h("th", { scope: "col", title: f.requirement || f.label }, h("div", {}, f.label), f.requirement ? h("div", { class: "field-requirement" }, f.requirement) : null))));
   const fragment = document.createDocumentFragment();
   for (const row of state.shown) {
+    const checkbox = h("input", { type: "checkbox", "data-paper-select": rowIdentity(row),
+      "aria-label": `选择文献：${row.title}`, onchange: event => {
+        if (event.target.checked) state.selected.add(rowIdentity(row)); else state.selected.delete(rowIdentity(row));
+        syncSelection();
+      } });
+    checkbox.checked = state.selected.has(rowIdentity(row));
     const identity = h("td", { class: "identity" },
+      h("label", { class: "paper-select" }, checkbox, "选择文献"),
       h("div", { class: "paper-author" }, `${row.authors || "作者未记录"}${row.year ? `（${row.year}）` : ""}`),
       h("button", { class: "paper-title", onclick: safe(() => repo.openPaper(row)), title: row.attachmentID ? "打开原文" : "在 Zotero 中定位文献" }, row.title),
       h("div", { class: "citekey" }, row.citekey),
@@ -280,13 +360,16 @@ function render() {
       const td = h("td", { class: row.editable ? "analysis-cell" : "", tabindex: row.editable ? "0" : null,
         "data-row": row.id, "data-field": field.id,
         "aria-label": `${row.title} · ${field.label}${row.editable ? "，按回车直接填写" : ""}` },
-        value ? h("div", { class: "cell-text" }, value) : h("span", { class: "placeholder" }, row.editable ? "点击直接填写…" : "—"));
+        value ? h("div", { class: "cell-text", "data-row": row.id, "data-field": field.id }, RGHighlights.render(document, value, row.highlights?.[field.id] || [])) : h("span", { class: "placeholder" }, row.editable ? "点击直接填写…" : "—"));
       if (row.editable) {
         td.append(h("button", { class: "expand-cell", title: "在弹窗中编辑长内容", onclick: safe(async event => {
           event.stopPropagation(); await openEditor(row, field, "modal");
         }) }, "展开编辑"));
         td.addEventListener("click", safe(event => {
           if (event.target.closest("button, textarea, input")) return;
+          const selection = window.getSelection?.();
+          if (selection && !selection.isCollapsed && selection.toString() &&
+            (!selection.anchorNode || td.contains(selection.anchorNode) || td.contains(selection.focusNode))) return;
           return openEditor(row, field);
         }));
         td.addEventListener("keydown", event => {
@@ -303,9 +386,48 @@ function render() {
   $("#empty").replaceChildren(h("h2", {}, state.loading ? "正在整理文献…" : !state.project ? "从一个研究项目开始" : state.rows.length ? "没有符合条件的文献" : "这个分类还没有文献"),
     h("p", {}, !state.project ? "在 Zotero 主窗口选择分类后，点击“使用当前分类”。" : state.rows.length ? "可以清空搜索或切换分析状态。" : "添加文献后点击刷新；子分类可通过上方开关包含。"));
   $("#results").scrollTop = scroll;
+  syncSelection();
 }
 function editorValue() {
   return state.editing?.mode === "inline" ? $("#inlineValue").value : $("#editValue").value;
+}
+function syncEditorText() {
+  const edit = state.editing;
+  if (!edit) return;
+  const value = editorValue();
+  if (value !== edit.textSnapshot) {
+    edit.highlights = C.rebaseHighlights(edit.textSnapshot, value, edit.highlights);
+    edit.textSnapshot = value;
+  }
+}
+function editorDirty() {
+  if (!state.editing) return false;
+  syncEditorText();
+  return editorValue() !== state.editing.original || JSON.stringify(state.editing.highlights) !== JSON.stringify(state.editing.originalHighlights);
+}
+function refreshEditorPreview() {
+  if (!state.editing) return;
+  syncEditorText();
+  const preview = $(state.editing.mode === "inline" ? "#inlineHighlightPreview" : "#editHighlightPreview");
+  if (preview) {
+    preview.replaceChildren(...(state.editing.highlights.length ? [RGHighlights.render(document, editorValue(), state.editing.highlights)] : []));
+  }
+  editorToolbar?.refresh?.();
+}
+let editorToolbar;
+function buildEditorToolbar(input) {
+  editorToolbar = RGHighlights.toolbar(document, {
+    getText: () => { syncEditorText(); return input.value; },
+    getRanges: () => { syncEditorText(); return state.editing?.highlights || []; },
+    getSelection: () => ({ start: input.selectionStart || 0, end: input.selectionEnd || 0 }),
+    disabled: () => state.saving,
+    onChange: ranges => {
+      if (!state.editing || state.saving) return;
+      state.editing.highlights = ranges;
+      refreshEditorPreview(); input.focus();
+    },
+  });
+  return editorToolbar;
 }
 function autoSizeInline() {
   const input = $("#inlineValue");
@@ -315,6 +437,7 @@ function autoSizeInline() {
 }
 async function openEditor(row, field, mode = "inline") {
   if (state.saving) return false;
+  highlightManager?.clear();
   if (state.editing) {
     if (state.editing.row.id === row.id && state.editing.field.id === field.id) {
       if (mode === "modal") expandEditor();
@@ -323,7 +446,10 @@ async function openEditor(row, field, mode = "inline") {
     // Committing the previous cell must succeed before moving to another one.
     if (!(await saveEditor())) return false;
   }
-  state.editing = { row, field, project: state.project, original: row.values[field.id] || "", mode };
+  const original = row.values[field.id] || "";
+  const originalHighlights = C.normalizeHighlights(original, row.highlights?.[field.id] || []);
+  state.editing = { row, field, project: { ...state.project, fields: allFields() }, original, mode,
+    originalHighlights, highlights: originalHighlights.map(range => ({ ...range })), textSnapshot: original };
   if (mode === "modal") {
     prepareDialog(state.editing.original);
   } else {
@@ -333,7 +459,7 @@ async function openEditor(row, field, mode = "inline") {
     state.editing.cell = cell;
     cell.classList.add("editing-cell");
     const input = h("textarea", { id: "inlineValue", rows: 3, "aria-label": `${field.label} · 直接填写`,
-      placeholder: field.requirement || "直接填写，Shift+Enter 换行", oninput: autoSizeInline,
+      placeholder: field.requirement || "直接填写，Shift+Enter 换行", oninput: () => { refreshEditorPreview(); autoSizeInline(); },
       onkeydown: event => {
         if (event.isComposing) return;
         if (event.key === "Escape") { event.preventDefault(); closeEditor(); }
@@ -341,7 +467,8 @@ async function openEditor(row, field, mode = "inline") {
         else if (event.key === "Tab") { event.preventDefault(); safe(() => saveAndMove(event.shiftKey ? -1 : 1))(); }
       } });
     input.value = state.editing.original;
-    cell.replaceChildren(...[input,
+    cell.replaceChildren(...[input, buildEditorToolbar(input),
+      h("div", { id: "inlineHighlightPreview", class: "highlight-preview", "aria-label": "文字高亮预览" }),
       field.requirement ? h("p", { class: "inline-requirement" }, field.requirement) : null,
       h("div", { class: "inline-actions" },
         h("button", { id: "inlineSave", class: "primary", onclick: safe(saveEditor) }, "保存"),
@@ -351,7 +478,7 @@ async function openEditor(row, field, mode = "inline") {
       h("p", { id: "inlineError", class: "error", role: "alert" })].filter(Boolean));
     // Events on the inline controls must not open another editor on the parent cell.
     for (const event of ["click", "keydown"]) cell.addEventListener(event, e => e.stopPropagation());
-    autoSizeInline(); input.focus();
+    refreshEditorPreview(); autoSizeInline(); input.focus();
   }
   return true;
 }
@@ -364,10 +491,13 @@ function prepareDialog(value) {
   $("#editValue").value = value;
   $("#editValue").placeholder = field.requirement || "填写你的分析，支持多行文本…";
   $("#editError").textContent = "";
+  $("#editHighlightTools").replaceChildren(buildEditorToolbar($("#editValue")));
+  refreshEditorPreview();
   $("#editDialog").showModal(); $("#editValue").focus();
 }
 function expandEditor() {
   if (!state.editing || state.saving || state.editing.mode === "modal") return;
+  syncEditorText();
   const value = editorValue();
   state.editing.mode = "modal";
   state.editing.cell.replaceChildren(h("div", { class: "cell-text" }, value), h("span", { class: "placeholder" }, "正在弹窗中编辑…"));
@@ -375,6 +505,7 @@ function expandEditor() {
 }
 function collapseEditor() {
   if (!state.editing || state.saving) return;
+  syncEditorText();
   const previous = state.editing;
   const { row, field, original } = previous;
   const value = editorValue();
@@ -388,12 +519,15 @@ function collapseEditor() {
       return;
     }
     state.editing.original = original;
-    $("#inlineValue").value = value; autoSizeInline();
+    state.editing.originalHighlights = previous.originalHighlights;
+    state.editing.highlights = previous.highlights;
+    state.editing.textSnapshot = value;
+    $("#inlineValue").value = value; refreshEditorPreview(); autoSizeInline();
   }).catch(failure);
 }
 function closeEditor(force = false) {
   if (state.saving) return false;
-  if (!force && state.editing && editorValue() !== state.editing.original && !window.confirm("放弃尚未保存的分析内容？")) return false;
+  if (!force && state.editing && editorDirty() && !window.confirm("放弃尚未保存的分析内容？")) return false;
   state.editing = null;
   $("#editDialog").close(); render();
   if (state.pendingReload) scheduleReload();
@@ -413,17 +547,21 @@ async function saveAndMove(direction) {
 async function saveEditor(event) {
   event?.preventDefault(); event?.stopPropagation?.();
   if (!state.editing || state.saving) return false;
-  const { row, field, project, original, mode } = state.editing;
+  syncEditorText();
+  const { row, field, project, original, mode, highlights, originalHighlights } = state.editing;
   const value = editorValue();
   state.saving = true;
   const controls = mode === "inline" ? ["inlineSave", "inlineCancel", "inlineExpand", "inlineValue"] : ["editSave", "editCancel", "editClose", "editCollapse", "editValue"];
   for (const id of controls) $("#" + id).disabled = true;
+  editorToolbar?.refresh?.();
   const error = mode === "inline" ? $("#inlineError") : $("#editError");
   error.textContent = "";
   let successful = false;
   try {
-    const saved = await repo.saveField(project, row, field.id, value, original);
+    const saved = await repo.saveField(project, row, field.id, value, original,
+      { highlights, expectedHighlights: originalHighlights });
     row.values = saved.values;
+    row.highlights = saved.highlights || {};
     row.noteKey = saved.note?.key || null;
     row.noteURL = row.noteKey ? C.itemLink(project.library, row.noteKey) : "";
     $("#saveStatus").textContent = "已保存到项目子笔记";
@@ -432,6 +570,7 @@ async function saveEditor(event) {
   finally {
     state.saving = false;
     for (const id of controls) $("#" + id).disabled = false;
+    editorToolbar?.refresh?.();
   }
   if (successful) { closeEditor(true); toast(`已保存“${field.label}”`); }
   return successful;
@@ -447,7 +586,7 @@ function showAnnotations(row) {
 }
 function showTemplateExport() {
   if (!state.project || state.loading || !state.shown.length || state.saving) return;
-  if (aiManager?.isOpen() || tableManager?.isOpen() || fieldManager?.dialog?.open) return;
+  if (aiManager?.isOpen() || batchManager?.isOpen() || tableManager?.isOpen() || fieldManager?.dialog?.open) return;
   if (state.editing && !closeEditor()) return;
   templateExport = { project: { ...state.project }, fields: activeFields(), rows: [...state.shown] };
   $("#templateContext").textContent = `${state.project.name} · 当前筛选的 ${state.shown.length} 篇文献 · ${activeFields().length} 个字段`;
@@ -500,7 +639,7 @@ async function readImportFile() {
 }
 async function showTableImport() {
   if (!state.project || state.loading || state.saving || !state.project.library.editable) return;
-  if (aiManager?.isOpen() || fieldManager?.dialog?.open) return;
+  if (aiManager?.isOpen() || batchManager?.isOpen() || fieldManager?.dialog?.open) return;
   if (!tableManager) tableManager = new RGTableDialog.Manager({
     document, getProject: () => state.project ? { ...state.project, recursive: prefs().recursive } : null, getFields: activeFields, getRows: () => state.rows,
     beforeOpen: () => !state.editing || closeEditor(), readFile: readImportFile,
@@ -512,6 +651,7 @@ async function showTableImport() {
           const targets = new Set([record.row, ...state.rows.filter(r => r.id === record.row.id && r.key === record.row.key)]);
           for (const row of targets) {
             row.values = record.values;
+            row.highlights = record.highlights || {};
             row.noteKey = record.note?.key || null;
             row.noteURL = row.noteKey ? C.itemLink(project.library, row.noteKey) : "";
           }
@@ -556,6 +696,24 @@ function scheduleReload() {
 async function init() {
   if (!Z) throw new Error("无法连接 Zotero，请从 Zotero 工具菜单打开插件。");
   readPrefs(); refreshChoices();
+  highlightManager = new RGHighlights.Manager({
+    document, getProject: () => state.project, getFields: activeFields, getRows: () => state.rows,
+    beforeSave: () => !state.editing && !state.saving && !state.loading && !aiManager?.isOpen() && !batchManager?.isOpen() && !tableManager?.isOpen() && !fieldManager?.dialog?.open && !$("#templateDialog").open,
+    save: async (project, row, fieldID, value, expected, options) => {
+      if (state.saving || state.editing) throw new Error("请先保存或关闭正在编辑的内容。");
+      state.saving = true;
+      try {
+        const record = await repo.saveField({ ...project, fields: allFields() }, row, fieldID, value, expected, options);
+        updateSavedRecord(project, { ...record, row });
+        render(); $("#saveStatus").textContent = "文字高亮已保存到项目笔记";
+        return record;
+      } finally { state.saving = false; if (state.pendingReload) scheduleReload(); }
+    }, notify: toast,
+  });
+  $("#selectShown").addEventListener("click", selectShown);
+  $("#clearSelection").addEventListener("click", () => { state.selected.clear(); syncSelection(); });
+  $("#selectZotero").addEventListener("click", selectFromZotero);
+  $("#batchAI").addEventListener("click", safe(showBatchAI));
   $("#project").addEventListener("change", safe(() => selectProject($("#project").value)));
   $("#current").addEventListener("click", safe(async () => {
     refreshChoices();
@@ -581,18 +739,20 @@ async function init() {
   $("#editForm").addEventListener("submit", event => { event.preventDefault(); safe(saveEditor)(); });
   for (const id of ["editCancel", "editClose"]) $("#" + id).addEventListener("click", () => closeEditor());
   $("#editDialog").addEventListener("cancel", event => { event.preventDefault(); closeEditor(); });
+  $("#editValue").addEventListener("input", refreshEditorPreview);
   $("#editValue").addEventListener("keydown", event => {
     if (!event.isComposing && event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); safe(saveEditor)(); }
   });
   window.addEventListener("beforeunload", event => {
-    if (state.saving || (state.editing && editorValue() !== state.editing.original) ||
+    if (state.saving || (state.editing && editorDirty()) ||
       (fieldManager?.dialog?.open && (fieldManager.busy || fieldManager.dirty())) ||
       (aiManager?.isOpen() && (aiManager.busy || aiManager.dirty())) ||
+      (batchManager?.isOpen() && (batchManager.busy || batchManager.dirty())) ||
       (tableManager?.isOpen() && (tableManager.busy || tableManager.dirty()))) { event.preventDefault(); event.returnValue = ""; }
   });
   const observerID = Z.Notifier.registerObserver({ notify: () => scheduleReload() },
     ["item", "item-tag", "collection", "collection-item"], "projectlitmatrix");
-  window.addEventListener("unload", () => { aiManager?.cancel(); Z.Notifier.unregisterObserver(observerID); clearTimeout(reloadTimer); clearTimeout(toastTimer); clearTimeout(searchTimer); });
+  window.addEventListener("unload", () => { aiManager?.cancel(); batchManager?.cancel(); highlightManager?.dispose(); Z.Notifier.unregisterObserver(observerID); clearTimeout(reloadTimer); clearTimeout(toastTimer); clearTimeout(searchTimer); });
   window.ProjectLitMatrixUI = { selectProject, reload, showFields: showColumns };
   const query = new URLSearchParams(location.search);
   const requested = window.__plmRequestedProject || (query.get("collection") ? { libraryID: query.get("library"), collectionKey: query.get("collection") } : null);

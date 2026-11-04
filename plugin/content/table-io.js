@@ -211,7 +211,7 @@
       return values[0] || "";
     };
     for (const record of table.records) {
-      const result = { line: record.line, status: "skip", message: "", changes: {}, expected: {}, protectedFields: [], matchBy: "", target: null };
+      const result = { line: record.line, status: "skip", message: "", changes: {}, expected: {}, expectedHighlights: {}, protectedFields: [], matchBy: "", target: null };
       output.push(result);
       try {
         if (!Array.isArray(record.cells) || record.cells.length !== table.headers.length || record.cells.some(cell => typeof cell !== "string")) error("此行单元格格式无效。");
@@ -244,7 +244,7 @@
         } else error("缺少文献链接、文献 Key、引用键或唯一标题，无法匹配文献。");
         if (matches.length !== 1) error("当前标识匹配到多篇文献，无法唯一确定，请使用文献链接。");
         const target = result.target = matches[0];
-        const changes = [], expected = [];
+        const changes = [], expected = [], expectedHighlights = [];
         for (const { index, id } of fieldColumns) {
           const incoming = record.cells[index];
           const old = Object.prototype.hasOwnProperty.call(target.values || {}, id) ? String(target.values[id] ?? "") : "";
@@ -253,8 +253,10 @@
           if (value.trim() === old.trim()) { continue; }
           if (old.trim() && !overwrite) { result.protectedFields.push(id); continue; }
           changes.push([id, value]); expected.push([id, old]);
+          expectedHighlights.push([id, C.normalizeHighlights(old, target.highlights?.[id] || [])]);
         }
         result.changes = Object.fromEntries(changes); result.expected = Object.fromEntries(expected);
+        result.expectedHighlights = Object.fromEntries(expectedHighlights);
         if (!changes.length) {
           result.message = result.protectedFields.length ? `已有 ${result.protectedFields.length} 个字段受到保护，未覆盖。` : "没有需要写入的内容（空白或与原值相同）。";
           continue;
@@ -267,7 +269,7 @@
         if (result.protectedFields.length) result.message += ` 已有 ${result.protectedFields.length} 个字段保留原值。`;
       } catch (e) {
         result.status = "error"; result.message = e.message;
-        result.changes = {}; result.expected = {};
+        result.changes = {}; result.expected = {}; result.expectedHighlights = {};
       }
     }
     // Duplicate paper rows are never applied in file order: neither wins silently.
@@ -279,7 +281,7 @@
     }
     for (const same of targets.values()) if (same.length > 1) for (const result of same) {
       result.status = "error"; result.message = "表格中有多行对应同一文献，请合并后重新导入。";
-      result.changes = {}; result.expected = {};
+      result.changes = {}; result.expected = {}; result.expectedHighlights = {};
     }
     if (output.some(result => result.matchBy === "title" && result.target)) warnings.push("部分行仅按唯一标题匹配，请在写入前核对文献。优先保留模板中的文献标识。");
     const stats = { total: output.length, ready: 0, skip: 0, error: 0, changes: 0 };

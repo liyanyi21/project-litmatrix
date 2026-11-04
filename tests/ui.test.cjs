@@ -36,7 +36,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
   }));
   const paper = { isAttachment: () => false };
   const row = { id: 1, key: 'PAPERKEY', libraryID: 1, title: '未批注文献', authors: '张', year: '2026', citekey: 'Zhang2026', tags: [], annotations: [],
-    values: C.blankValues(), editable: true, paper, itemURL: 'zotero://select/library/items/PAPERKEY', pdfURL: '', attachmentID: null };
+    values: C.blankValues(), highlights: {}, editable: true, paper, itemURL: 'zotero://select/library/items/PAPERKEY', pdfURL: '', attachmentID: null };
   const rowB = { ...row, values: C.blankValues() };
   const loads = [], saves = [], logs = [], sourceCalls = [], apiCalls = [], keyCalls = [], batchSaves = [], importSaves = [];
   const pickerSelections = [], pickerCalls = [], fileReads = [], fileWrites = [], files = new Map();
@@ -68,17 +68,17 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
       if (fail) throw new Error('模拟读取失败');
       return [project.id === PROJECT_A ? row : rowB];
     },
-    saveField: async (project, target, id, value, expected) => {
-      saves.push({ projectID: project.id, id, value, expected });
-      return { note: { key: 'NOTEKEY' }, values: { ...target.values, [id]: value } };
+    saveField: async (project, target, id, value, expected, options = {}) => {
+      saves.push({ projectID: project.id, id, value, expected, options: clone(options) });
+      return { note: { key: 'NOTEKEY' }, values: { ...target.values, [id]: value }, highlights: { ...target.highlights, [id]: options.highlights || [] } };
     },
     paperSource: async (target, options) => {
       sourceCalls.push({ rowID: target.id, mode: options.mode, maxChars: options.maxChars });
       return { text: '论文原文片段：实验比较两种条件，结果有待结合原文核对。', label: '模拟提取文本', chars: 30, truncated: false,
         paper: { title: target.title, authors: target.authors, year: target.year, abstract: '模拟公开摘要' } };
     },
-    saveFields: async (project, target, changes, expected) => {
-      batchSaves.push({ projectID: project.id, changes: clone(changes), expected: clone(expected) });
+    saveFields: async (project, target, changes, expected, options = {}) => {
+      batchSaves.push({ projectID: project.id, changes: clone(changes), expected: clone(expected), options: clone(options) });
       for (const id of Object.keys(changes)) if ((target.values[id] || '') !== expected[id]) throw new Error('模拟原子字段冲突');
       return { note: { key: 'AI_NOTEKEY' }, values: { ...target.values, ...changes } };
     },
@@ -109,6 +109,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
     setTimeout(fn, ms) { const timer = setTimeout(fn, ms); timer.unref(); timers.add(timer); return timer; },
     clearTimeout(timer) { clearTimeout(timer); timers.delete(timer); } });
   window.confirm = () => true;
+  window.getSelection = () => null;
   window.fetch = async (url, options) => {
     apiCalls.push({ url, options });
     const payload = JSON.parse(options.body);
@@ -123,6 +124,8 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
   vm.runInContext(fs.readFileSync('plugin/content/ai-dialog.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/table-io.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/table-dialog.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/ai-batch.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/highlights.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/matrix.js', 'utf8'), context);
   await settle();
   const run = code => vm.runInContext(code, context);
@@ -475,6 +478,7 @@ test('AI drafts update main table values only after explicit aggregate save, pre
     assert.equal(f.batchSaves.length, 1, 'all checked fields use one aggregate repository operation');
     assert.equal(f.batchSaves[0].projectID, PROJECT_A);
     assert.equal(f.batchSaves[0].expected.findings, '');
+    assert.deepEqual(f.batchSaves[0].options.expectedHighlights.findings, []);
     assert.equal(f.batchSaves[0].changes.remarks, undefined);
     assert.equal(f.row.values.findings, 'AI 草稿：核心结论');
     assert.equal(f.row.values.remarks, '人工备注保留');
@@ -706,5 +710,100 @@ test('per-generation summary detail reaches the prompt while preserving the save
     await f.run('aiManager.generate()');
     assert.equal(f.apiCalls.length, 1, 'actual provider/model changes must still block dispatch');
     assert.ok(f.document.querySelector('#rg-ai-error').textContent.includes('API 设置已变化'));
+  } finally { f.cleanup(); }
+});
+
+
+test('paper checkboxes retain selected papers across filters and reset for another project', async () => {
+  const f = await ui();
+  try {
+    f.run('state.rows.push({...state.rows[0], id:2, key:"PAPER002", title:"第二篇文献", values:C.blankValues(), highlights:{}}); render()');
+    await f.click(f.document.querySelector('#selectShown'));
+    assert.equal(f.run('selectedRows().length'), 2);
+    assert.equal(f.document.querySelectorAll('[data-paper-select]').length, 2);
+    assert.ok([...f.document.querySelectorAll('[data-paper-select]')].every(box => box.checked));
+    f.document.querySelector('#search').value = '第二篇';
+    f.run('render()');
+    assert.equal(f.document.querySelectorAll('[data-paper-select]').length, 1);
+    assert.ok(f.document.querySelector('#selectionCount').textContent.includes('已选 2 篇'));
+    assert.ok(f.document.querySelector('#selectionCount').textContent.includes('筛选外 1 篇'));
+    await f.run('selectProject(state.projects[1].id)');
+    assert.equal(f.run('selectedRows().length'), 0);
+    assert.equal(f.document.querySelector('#batchAI').disabled, true);
+  } finally { f.cleanup(); }
+});
+
+test('selected papers generate independent batch requests and apply once after explicit aggregate confirmation', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '人工备注，不发送或覆盖';
+    f.run('state.rows.push({...state.rows[0], id:2, key:"PAPER002", title:"第二篇文献", values:C.blankValues(), highlights:{}}); render(); selectShown()');
+    await f.click(f.document.querySelector('#batchAI'));
+    assert.equal(f.run('batchManager.isOpen()'), true);
+    assert.equal(f.sourceCalls.length, 2);
+    assert.equal(f.apiCalls.length, 0);
+    assert.equal(f.importSaves.length, 0);
+    await f.run('batchManager.generate()');
+    assert.equal(f.apiCalls.length, 2);
+    const packets = f.apiCalls.map(call => {
+      const user = JSON.parse(call.options.body).messages.at(-1).content;
+      return JSON.parse(user.slice(user.indexOf('{')));
+    });
+    assert.deepEqual(packets.map(packet => packet.paper.title), ['未批注文献', '第二篇文献']);
+    assert.ok(!packets[0].requestedFields.some(field => field.id === 'remarks'));
+    assert.ok(packets[1].requestedFields.some(field => field.id === 'remarks'));
+    assert.ok(!f.apiCalls.some(call => call.options.body.includes('人工备注，不发送或覆盖')));
+    assert.equal(f.importSaves.length, 0);
+    assert.equal(await f.run('batchManager.apply()'), true);
+    assert.equal(f.importSaves.length, 1);
+    assert.equal(f.importSaves[0].operations.length, 2);
+    assert.equal(f.row.values.remarks, '人工备注，不发送或覆盖');
+    assert.equal(f.row.values.findings, 'AI 草稿：核心结论');
+    assert.equal(f.run('state.rows[1].values.findings'), 'AI 草稿：核心结论');
+  } finally { f.cleanup(); }
+});
+
+test('reading selections highlight exact text without opening the editor and save formatting-only changes', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '关键结果。第二句。';
+    f.run('render()');
+    f.window.getSelection = () => ({ isCollapsed:false, toString:()=>'关键结果', removeAllRanges() {} });
+    await f.click(f.cell('remarks'));
+    assert.equal(f.document.querySelector('#inlineValue'), null, 'drag-selected text must remain available for highlighting');
+    assert.equal(f.run(`highlightManager.capture({element:document.querySelector('td[data-field="remarks"] .cell-text'), start:0,end:4})`), true);
+    await f.click(f.document.querySelector('#rg-highlight-selection-toolbar [data-highlight-color="yellow"]'));
+    assert.equal(f.saves.length, 1);
+    assert.equal(f.saves[0].value, '关键结果。第二句。');
+    assert.equal(f.saves[0].expected, '关键结果。第二句。');
+    assert.deepEqual(f.saves[0].options.highlights, [{ start:0, end:4, color:'yellow' }]);
+    assert.equal(f.cell('remarks').querySelector('[data-rg-highlight="yellow"]').textContent, '关键结果');
+    assert.equal(f.row.values.remarks, '关键结果。第二句。');
+  } finally { f.cleanup(); }
+});
+
+test('editor colors survive popup roundtrip and formatting-only drafts require save or discard', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '需要标记的句子。';
+    f.run('render()');
+    await f.click(f.cell('remarks'));
+    const input = f.document.querySelector('#inlineValue');
+    input.selectionStart = 0; input.selectionEnd = 4;
+    await f.click(f.cell('remarks').querySelector('[data-highlight-color="pink"]'));
+    assert.ok(f.document.querySelector('#inlineHighlightPreview [data-rg-highlight="pink"]'));
+    assert.equal(f.saves.length, 0);
+    await f.click(f.document.querySelector('#inlineExpand'));
+    assert.equal(f.document.querySelector('#editHighlightPreview [data-rg-highlight="pink"]').textContent, '需要标记');
+    await f.click(f.document.querySelector('#editCollapse'));
+    assert.equal(f.document.querySelector('#inlineHighlightPreview [data-rg-highlight="pink"]').textContent, '需要标记');
+    f.window.confirm = () => false;
+    await f.click(f.document.querySelector('#inlineCancel'));
+    assert.ok(f.document.querySelector('#inlineValue'), 'canceling a formatting draft must request discard confirmation');
+    await f.click(f.document.querySelector('#inlineSave'));
+    assert.equal(f.saves.length, 1);
+    assert.deepEqual(f.saves[0].options.highlights, [{ start:0, end:4, color:'pink' }]);
+    assert.deepEqual(f.saves[0].options.expectedHighlights, []);
+    assert.equal(f.cell('remarks').querySelector('[data-rg-highlight="pink"]').textContent, '需要标记');
   } finally { f.cleanup(); }
 });

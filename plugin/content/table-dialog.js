@@ -61,7 +61,12 @@
       this.project = { ...project };
       this.fields = copy(this.options.getFields().filter(f => !f.archived));
       this.fieldSignature = signature(this.fields);
-      this.rows = this.options.getRows().slice();
+      this.rowTargets = new Map();
+      this.rows = this.options.getRows().map(row => {
+        const snapshot = { ...row, values: copy(row.values || {}), highlights: copy(row.highlights || {}) };
+        this.rowTargets.set(snapshot, row);
+        return snapshot;
+      });
       this.text = ""; this.fileName = ""; this.table = this.plan = null;
       this.mappings = []; this.selected = new Set(); this.page = 0;
       this.overwrite = this.clearBlanks = this.applied = false;
@@ -254,7 +259,8 @@
         this.guardProject();
         const selected = this.selectedRows();
         if (!selected.length) throw new Error("请先选择至少一行可导入内容。");
-        const operations = selected.map(row => ({ row: row.target, changes: { ...row.changes }, expected: { ...row.expected } }));
+        const operations = selected.map(row => ({ row: this.rowTargets.get(row.target) || row.target,
+          changes: { ...row.changes }, expected: { ...row.expected }, expectedHighlights: copy(row.expectedHighlights) }));
         this.busy = this.saving = true; this.error = ""; this.status = "正在写入所选项目字段…"; this.render();
         try {
           await this.options.save(this.project, operations);

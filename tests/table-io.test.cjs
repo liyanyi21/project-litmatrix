@@ -215,3 +215,16 @@ test('planning is pure and snapshots old strings without mutating table, project
   current[0].values.findings = '后来修改';
   assert.equal(result.rows[0].expected.findings, '');
 });
+
+test('table plans capture independent formatting snapshots only for selected text changes', () => {
+  const current = clone(rows);
+  current[0].values.findings = '旧结论';
+  current[0].highlights = { findings: [{ start: 0, end: 1, color: 'yellow' }], remarks: [{ start: 0, end: 2, color: 'pink' }] };
+  const result = IO.buildPlan(table('文献Key,findings,remarks\nPAPER001,新结论,人工备注'), {
+    project, fields, rows: current, overwrite: true,
+  });
+  assert.deepEqual(result.rows[0].expectedHighlights, { findings: [{ start: 0, end: 1, color: 'yellow' }] });
+  current[0].highlights.findings[0].color = 'green';
+  assert.equal(result.rows[0].expectedHighlights.findings[0].color, 'yellow');
+  assert.equal(result.rows[0].highlights, undefined, 'the importer supplies no replacement formatting');
+});

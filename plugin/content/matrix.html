@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <title>研矩 · ResearchGrid</title>
-  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css"><link rel="stylesheet" href="ai-dialog.css"><link rel="stylesheet" href="table-dialog.css">
+  <link rel="stylesheet" href="matrix.css"><link rel="stylesheet" href="fields.css"><link rel="stylesheet" href="ai-dialog.css"><link rel="stylesheet" href="table-dialog.css"><link rel="stylesheet" href="ai-batch.css"><link rel="stylesheet" href="highlights.css">
 </head>
 <body>
   <header>
-    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.5.0</span></div>
+    <div class="heading"><div><span class="eyebrow">RESEARCHGRID</span><h1>研矩</h1></div><span class="version">0.6.0</span></div>
     <div class="toolbar">
       <label class="project-label">研究项目<select id="project" aria-label="研究项目"><option value="">请选择 Zotero 分类</option></select></label>
       <button id="current">使用当前分类</button>
@@ -21,14 +21,15 @@
     </div>
     <p id="projectHint" class="hint">在 Zotero 中选择分类，再点击“使用当前分类”。每个分类的分析与备注独立保存。</p>
   </header>
+  <div class="selectionbar"><span id="selectionCount" role="status">已选 0 篇</span><button id="selectShown">全选当前筛选</button><button id="selectZotero">勾选 Zotero 中所选</button><button id="clearSelection" disabled>清空选择</button><button id="batchAI" class="primary" disabled>批量 AI 总结（0）</button><span class="hint">划选分析文字可高亮</span></div>
   <div class="statusline"><span id="status" role="status" aria-live="polite">请选择研究项目</span><span id="saveStatus"></span></div>
   <main id="results"><table id="grid" hidden><colgroup></colgroup><thead></thead><tbody></tbody></table>
     <div id="empty"><h2>从一个研究项目开始</h2><p>选择分类后，所有文献都会出现在这里，包括没有高亮或批注的文献。</p></div>
   </main>
   <dialog id="editDialog">
     <form id="editForm"><div class="dialog-title"><h2 id="editHeading"></h2><button type="button" id="editClose" class="icon" aria-label="关闭编辑">×</button></div>
-      <p id="editContext" class="hint"></p><p id="editRequirement" class="field-guidance" hidden></p><textarea id="editValue" rows="10" aria-label="分析内容" placeholder="填写你的分析，支持多行文本…"></textarea>
-      <p id="editError" class="error" role="alert"></p><div class="dialog-actions"><span class="hint">⌘ / Ctrl + Enter 保存</span><span class="spacer"></span><button type="button" id="editCollapse">回到表格</button><button type="button" id="editCancel">取消</button><button id="editSave" class="primary" type="submit">保存</button></div>
+      <p id="editContext" class="hint"></p><p id="editRequirement" class="field-guidance" hidden></p><div id="editHighlightTools"></div><textarea id="editValue" rows="10" aria-label="分析内容" placeholder="填写你的分析，支持多行文本…"></textarea>
+      <div id="editHighlightPreview" class="highlight-preview"></div><p id="editError" class="error" role="alert"></p><div class="dialog-actions"><span class="hint">⌘ / Ctrl + Enter 保存</span><span class="spacer"></span><button type="button" id="editCollapse">回到表格</button><button type="button" id="editCancel">取消</button><button id="editSave" class="primary" type="submit">保存</button></div>
     </form>
   </dialog>
   <dialog id="annotationsDialog"><div class="dialog-title"><h2>原文批注</h2><button id="annotationsClose" class="icon" aria-label="关闭原文批注">×</button></div><p id="annotationTitle" class="hint"></p><div id="annotationsList"></div></dialog>
@@ -43,6 +44,6 @@
     <div class="dialog-actions"><span class="spacer"></span><button id="templateCancel">取消</button><button id="templateSave" class="primary">保存待填模板</button></div>
   </dialog>
   <div id="toast" role="status" hidden></div>
-  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="ai.js"></script><script src="ai-dialog.js"></script><script src="table-io.js"></script><script src="table-dialog.js"></script><script src="matrix.js"></script>
+  <script src="core.js"></script><script src="repository.js"></script><script src="fields.js"></script><script src="ai.js"></script><script src="ai-dialog.js"></script><script src="table-io.js"></script><script src="table-dialog.js"></script><script src="ai-batch.js"></script><script src="highlights.js"></script><script src="matrix.js"></script>
 </body>
 </html>
