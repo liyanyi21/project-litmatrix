@@ -1,6 +1,6 @@
 {
   "name": "research-grid",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "研矩：按研究项目组织中文文献分析的独立 Zotero 插件",
   "license": "AGPL-3.0-or-later",

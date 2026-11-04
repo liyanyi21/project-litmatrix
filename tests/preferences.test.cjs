@@ -92,6 +92,135 @@ test('application shutdown leaves native settings cleanup to Zotero', async () =
   assert.equal(f.closed(), 0);
 });
 
+function matrixLaunch() {
+  const f = lifecycle(), opened = [], calls = [], errors = [];
+  let selection = [], existing = null;
+  const matrix = {};
+  const win = { ZoteroPane: { getSelectedCollections: () => selection },
+    openDialog(...args) { opened.push(args); return matrix; } };
+  f.Zotero.ProjectLitMatrix = {};
+  f.Zotero.getMainWindow = () => win;
+  f.Zotero.logError = error => errors.push(error);
+  f.context.Services.wm.getMostRecentWindow = () => existing;
+  return { ...f, win, matrix, opened, calls, errors,
+    select: value => { selection = value; }, existing: value => { existing = value; } };
+}
+const plain = value => JSON.parse(JSON.stringify(value));
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('bootstrap selection preserves cross-library identities and native order while removing duplicates', () => {
+  const f = matrixLaunch();
+  const a = { libraryID: 1, key: 'SAMEKEY1' }, b = { libraryID: 2, key: 'SAMEKEY1' };
+  f.select([b, a, b, null, {}, { libraryID: 1, key: '' }]);
+  assert.deepEqual(plain(f.context.selectedProjects(f.win)), [
+    { libraryID: 2, collectionKey: 'SAMEKEY1' }, { libraryID: 1, collectionKey: 'SAMEKEY1' },
+  ]);
+  assert.equal(f.context.selectedProject(f.win), null, 'the legacy helper still requires exactly one native selection');
+  f.win.ZoteroPane = { getSelectedCollection: () => a };
+  assert.deepEqual(plain(f.context.selectedProjects(f.win)), [{ libraryID: 1, collectionKey: 'SAMEKEY1' }]);
+  assert.deepEqual(plain(f.context.selectedProject(f.win)), { libraryID: 1, collectionKey: 'SAMEKEY1' });
+  assert.deepEqual(plain(f.context.selectedProjects(null)), []);
+});
+
+test('new matrix windows retain the legacy single-selection URL and pending target attributes', () => {
+  const f = matrixLaunch();
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }]);
+  assert.equal(f.context.openMatrix(f.win), f.matrix);
+  assert.equal(f.opened[0][0], 'chrome://projectlitmatrix/content/matrix.html?library=1&collection=FIXTURE1');
+  assert.deepEqual(plain(f.matrix.__plmRequestedProject), { libraryID: 1, collectionKey: 'FIXTURE1' });
+  assert.deepEqual(plain(f.matrix.__plmRequestedProjects), [{ libraryID: 1, collectionKey: 'FIXTURE1' }]);
+  assert.equal(f.Zotero.ProjectLitMatrix.hostWindow, f.win);
+});
+
+test('new matrix windows encode the complete multi-selection in a local chrome URL and pending attribute', () => {
+  const f = matrixLaunch();
+  f.select([{ libraryID: 2, key: 'FIXTURE2' }, { libraryID: 1, key: 'FIXTURE1' }]);
+  f.context.openMatrix(f.win, { fields: true });
+  const url = new URL(f.opened[0][0]);
+  assert.equal(url.protocol, 'chrome:');
+  assert.equal(url.hostname, 'projectlitmatrix');
+  const expected = [{ libraryID: 2, collectionKey: 'FIXTURE2' }, { libraryID: 1, collectionKey: 'FIXTURE1' }];
+  assert.deepEqual(JSON.parse(url.searchParams.get('projects')), expected);
+  assert.equal(url.searchParams.has('library'), false);
+  assert.deepEqual(plain(f.matrix.__plmRequestedProjects), expected);
+  assert.equal(f.matrix.__plmRequestedProject, undefined);
+  assert.equal(f.matrix.__plmOpenFields, true);
+});
+
+test('existing ready matrix windows select one project or all projects and never switch on an empty selection', async () => {
+  const f = matrixLaunch();
+  let focused = 0, fields = 0;
+  f.existing({ focus() { focused++; }, ProjectLitMatrixUI: {
+    selectProject: target => { f.calls.push(['single', plain(target)]); },
+    selectProjects: targets => { f.calls.push(['many', plain(targets)]); }, showFields() { fields++; },
+  } });
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }]); f.context.openMatrix(f.win); await tick();
+  assert.deepEqual(f.calls[0], ['single', { libraryID: 1, collectionKey: 'FIXTURE1' }]);
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }, { libraryID: 2, key: 'FIXTURE2' }]);
+  f.context.openMatrix(f.win, { fields: true }); await tick();
+  assert.deepEqual(f.calls[1], ['many', [{ libraryID: 1, collectionKey: 'FIXTURE1' }, { libraryID: 2, collectionKey: 'FIXTURE2' }]]);
+  f.select([]); f.context.openMatrix(f.win); await tick();
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.opened.length, 0);
+  assert.equal(focused, 3);
+  assert.equal(fields, 1);
+  assert.equal(f.errors.length, 0);
+});
+
+test('existing unready matrix windows retain the latest pending multi-selection or legacy single target', () => {
+  const f = matrixLaunch(), existing = { focus() {}, __plmRequestedProject: { libraryID: 1, collectionKey: 'OLDKEY01' } };
+  f.existing(existing);
+  f.select([{ libraryID: 2, key: 'FIXTURE2' }, { libraryID: 1, key: 'FIXTURE1' }]);
+  f.context.openMatrix(f.win, { fields: true });
+  assert.equal(existing.__plmRequestedProject, undefined, 'a stale single target cannot override the newer multi-selection');
+  assert.deepEqual(plain(existing.__plmRequestedProjects), [{ libraryID: 2, collectionKey: 'FIXTURE2' }, { libraryID: 1, collectionKey: 'FIXTURE1' }]);
+  assert.equal(existing.__plmOpenFields, true);
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }]); f.context.openMatrix(f.win);
+  assert.deepEqual(plain(existing.__plmRequestedProject), { libraryID: 1, collectionKey: 'FIXTURE1' });
+  assert.deepEqual(plain(existing.__plmRequestedProjects), [{ libraryID: 1, collectionKey: 'FIXTURE1' }]);
+  f.select([]); f.context.openMatrix(f.win);
+  assert.equal(existing.__plmRequestedProjects.length, 1, 'empty native selection does not discard a pending explicit target');
+});
+
+test('a partially initialized matrix UI queues multi-selection and reports later selector failures', async () => {
+  const f = matrixLaunch(), existing = { focus() {}, ProjectLitMatrixUI: { selectProject() { throw new Error('synthetic selector failure'); } } };
+  f.existing(existing);
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }, { libraryID: 2, key: 'FIXTURE2' }]);
+  f.context.openMatrix(f.win); await tick();
+  assert.equal(existing.__plmRequestedProjects.length, 2);
+  assert.equal(f.errors.length, 0);
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }]); f.context.openMatrix(f.win); await tick();
+  assert.equal(f.errors.length, 1);
+  assert.match(f.errors[0].message, /synthetic selector failure/);
+});
+
+test('restore launches omit a native single selection but retain an explicit native multi-selection', () => {
+  const f = matrixLaunch();
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }]);
+  f.context.openMatrix(f.win, { restore: true });
+  assert.equal(f.opened[0][0], 'chrome://projectlitmatrix/content/matrix.html');
+  assert.equal(f.matrix.__plmRequestedProject, undefined);
+  assert.equal(f.matrix.__plmRequestedProjects, undefined);
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }, { libraryID: 2, key: 'FIXTURE2' }]);
+  f.context.openMatrix(f.win, { restore: true });
+  assert.deepEqual(JSON.parse(new URL(f.opened[1][0]).searchParams.get('projects')), [
+    { libraryID: 1, collectionKey: 'FIXTURE1' }, { libraryID: 2, collectionKey: 'FIXTURE2' },
+  ]);
+});
+
+test('Tools menu restores the prior matrix selection while the collection menu opens its current native category', () => {
+  const f = matrixLaunch();
+  const document = new DOMParser().parseFromString('<html><body><div id="menu_ToolsPopup"></div><div id="zotero-collectionmenu"></div></body></html>', 'text/html');
+  document.createXULElement = name => document.createElement(name);
+  f.win.document = document;
+  f.select([{ libraryID: 1, key: 'FIXTURE1' }]);
+  f.context.addToWindow(f.win);
+  document.getElementById('projectlitmatrix-tools').dispatchEvent(new document.defaultView.Event('command'));
+  assert.equal(f.opened[0][0], 'chrome://projectlitmatrix/content/matrix.html');
+  document.getElementById('projectlitmatrix-collection').dispatchEvent(new document.defaultView.Event('command'));
+  assert.equal(f.opened[1][0], 'chrome://projectlitmatrix/content/matrix.html?library=1&collection=FIXTURE1');
+});
+
 function preferences({ legacy = false } = {}) {
   const document = new DOMParser().parseFromString(content('content/preferences.xhtml'), 'text/xml');
   let opens = 0;

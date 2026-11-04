@@ -21,6 +21,7 @@
             path.unshift(parent.name);
           }
           result.push({ id: this.C.projectID(lib, col.key), libraryID: lib.libraryID,
+            libraryName: lib.name, libraryType: lib.libraryType, parentKey: byID.get(col.parentID)?.key || null,
             collectionKey: col.key, name: col.name, path: path.join(" / "),
             label: `${lib.name} / ${path.join(" / ")}`, library: lib, collection: col });
         }
@@ -43,6 +44,23 @@
       } catch (_) { /* multiple selection */ }
       if (!collection) return null;
       return this.projects().find(p => p.libraryID === collection.libraryID && p.collectionKey === collection.key) || null;
+    }
+    currentProjects() {
+      const pane = this.mainWindow()?.ZoteroPane;
+      let collections;
+      try {
+        const selected = pane?.getSelectedCollections?.();
+        collections = selected || [pane?.getSelectedCollection?.()].filter(Boolean);
+      } catch (_) { return []; }
+      if (!Array.isArray(collections) || !collections.length) return [];
+      const projects = this.projects(), seen = new Set(), result = [];
+      for (const collection of collections) {
+        const project = projects.find(p => p.libraryID === collection?.libraryID && p.collectionKey === collection?.key);
+        if (!project || seen.has(project.id)) continue;
+        seen.add(project.id);
+        result.push(project);
+      }
+      return result;
     }
     async itemsFor(project, recursive) {
       const cols = [project.collection];
@@ -151,6 +169,33 @@
       }
       return rows;
     }
+    async loadProjects(projects, recursiveByID = {}) {
+      if (!Array.isArray(projects) || !recursiveByID || typeof recursiveByID !== "object" || Array.isArray(recursiveByID)) {
+        throw new Error("项目选择或分类范围无效，请重新选择分类。");
+      }
+      const available = new Map(this.projects().map(project => [project.id, project])), seen = new Set();
+      // Validate and snapshot every selected schema before the first async read.
+      const snapshots = projects.map(project => {
+        if (!project || typeof project.id !== "string" || !project.id) throw new Error("所选项目无效，请重新选择分类。");
+        if (seen.has(project.id)) throw new Error("同一项目被重复选择，请移除重复分类。");
+        seen.add(project.id);
+        const live = available.get(project.id);
+        if (!live || live.libraryID !== project.libraryID || live.collectionKey !== project.collectionKey || live.collection.deleted) {
+          throw new Error("部分所选项目已变化或不存在，请重新选择分类。");
+        }
+        const fields = project.fields || this.C.FIELDS;
+        if (!Array.isArray(fields)) throw new Error("所选项目的字段配置无效，请重新打开项目。");
+        return { project: { ...project, ...live, fields: JSON.parse(JSON.stringify(fields)) },
+          recursive: recursiveByID[project.id] !== false };
+      });
+      const rows = [];
+      for (const { project, recursive } of snapshots) {
+        if (project.collection.deleted) throw new Error("部分所选项目已变化或不存在，请重新选择分类。");
+        const loaded = await this.loadProject(project, recursive);
+        for (const row of loaded) rows.push({ ...row, projectID: project.id, projectName: project.name, project });
+      }
+      return rows;
+    }
     htmlText(html) {
       const doc = new this.Parser().parseFromString(`<html><body>${html}</body></html>`, "text/html");
       return [...doc.body.childNodes].map(this.C.plainNode).join("").trim();
@@ -202,6 +247,9 @@
           && JSON.stringify(this.trimmedHighlights(value, formatting.desired[id])) !== JSON.stringify(fresh.highlights[id] || [])));
     }
     async saveFields(project, row, changes, expected, options = {}) {
+      if (row?.projectID !== undefined && row.projectID !== project?.id) {
+        throw new Error("文献行属于另一个项目，已阻止写入。请重新选择正确项目。");
+      }
       const fields = (project.fields || this.C.FIELDS).map(f => ({ ...f, aliases: [...(f.aliases || [])] }));
       const entries = Object.entries(changes);
       if (!entries.length) throw new Error("请先选择需要写入的字段。");
@@ -284,6 +332,9 @@
       // original row reference in the result so the UI can refresh after commit.
       const snapshots = operations.map(operation => {
         const row = operation?.row;
+        if (row?.projectID !== undefined && row.projectID !== project.id) {
+          throw new Error("导入文献行属于另一个项目，已阻止本次写入。请重新选择正确项目。");
+        }
         if (!row || !Number.isInteger(row.id) || row.id <= 0 || typeof row.key !== "string" || !row.key
           || row.libraryID !== project.libraryID || !row.editable) {
           throw new Error("导入包含不可编辑或不属于当前文献库的文献。");

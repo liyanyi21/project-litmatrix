@@ -51,7 +51,7 @@ function addToWindow(win) {
     const item = win.document.createXULElement("menuitem");
     item.id = `projectlitmatrix-${suffix}`;
     item.setAttribute("label", label);
-    item.addEventListener("command", () => openMatrix(win));
+    item.addEventListener("command", () => openMatrix(win, suffix === "tools" ? { restore: true } : {}));
     menu.append(sep, item);
     state.elements.push(sep, item);
   }
@@ -71,26 +71,54 @@ function selectedProject(win) {
   } catch (_) { return null; }
 }
 
+function selectedProjects(win) {
+  try {
+    const pane = win?.ZoteroPane;
+    const selected = pane?.getSelectedCollections?.();
+    const collections = selected || [pane?.getSelectedCollection?.()].filter(Boolean);
+    const seen = new Set(), targets = [];
+    if (!Array.isArray(collections)) return targets;
+    for (const col of collections) {
+      if (!Number.isInteger(col?.libraryID) || !col.key || typeof col.key !== "string") continue;
+      const identity = JSON.stringify([col.libraryID, col.key]);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      targets.push({ libraryID: col.libraryID, collectionKey: col.key });
+    }
+    return targets;
+  } catch (_) { return []; }
+}
+
 function openMatrix(win, options = {}) {
   win = win || Zotero.getMainWindow();
   if (win?.ZoteroPane) Zotero.ProjectLitMatrix.hostWindow = win;
-  const target = selectedProject(win);
+  const selected = selectedProjects(win);
+  const targets = options.restore && selected.length <= 1 ? [] : selected;
+  const target = targets.length === 1 ? targets[0] : null;
   const existing = Services.wm.getMostRecentWindow(PLM_WINDOW);
   if (existing) {
     existing.focus();
-    if (existing.ProjectLitMatrixUI) {
-      Promise.resolve(target ? existing.ProjectLitMatrixUI.selectProject(target) : null)
+    const ui = existing.ProjectLitMatrixUI;
+    if (ui && (!targets.length || (targets.length === 1 ? typeof ui.selectProject === "function" : typeof ui.selectProjects === "function"))) {
+      Promise.resolve().then(() => targets.length > 1 ? ui.selectProjects(targets) : target ? ui.selectProject(target) : null)
         .then(() => { if (options.fields) existing.ProjectLitMatrixUI.showFields(); })
         .catch(error => Zotero.logError(error));
     } else {
-      if (target) existing.__plmRequestedProject = target;
+      if (targets.length) {
+        existing.__plmRequestedProjects = targets;
+        if (target) existing.__plmRequestedProject = target;
+        else delete existing.__plmRequestedProject;
+      }
       if (options.fields) existing.__plmOpenFields = true;
     }
     return existing;
   }
-  const query = target ? `?library=${target.libraryID}&collection=${encodeURIComponent(target.collectionKey)}` : "";
+  const query = targets.length > 1 ? `?projects=${encodeURIComponent(JSON.stringify(targets))}`
+    : target ? `?library=${target.libraryID}&collection=${encodeURIComponent(target.collectionKey)}` : "";
   const matrix = win.openDialog("chrome://projectlitmatrix/content/matrix.html" + query,
     "project-litmatrix-window", "chrome,resizable,centerscreen,dialog=no,width=1440,height=900");
+  if (targets.length) matrix.__plmRequestedProjects = targets;
+  if (target) matrix.__plmRequestedProject = target;
   if (options.fields) matrix.__plmOpenFields = true;
   return matrix;
 }

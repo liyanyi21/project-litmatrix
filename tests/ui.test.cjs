@@ -8,6 +8,20 @@ const Table = require('../plugin/content/table-io.js');
 
 const PROJECT_A = 'user:collection:PROJECTA';
 const PROJECT_B = 'user:collection:PROJECTB';
+const multiProjectPrefs = () => ({ version: 1, projects: {
+  [PROJECT_A]: { fields: [
+    { id: 'findings', label: '甲项目结论', requirement: '只记录甲项目所需结果。', visible: true, archived: false },
+    { id: 'remarks', label: '甲项目备注', requirement: '甲项目个人备注。', visible: true, archived: false },
+  ], display: { showTags: true, metadataColumns: ['year'] } },
+  [PROJECT_B]: { fields: [
+    { id: 'methods_sample', label: '乙项目方法', requirement: '只记录乙项目所需研究方法。', visible: true, archived: false },
+    { id: 'remarks', label: '乙项目备注', requirement: '乙项目个人备注。', visible: true, archived: false },
+  ], display: { showTags: true, metadataColumns: ['DOI'] } },
+} });
+const projectGroup = (f, id) => f.document.querySelector(`[data-project-group="${id}"]`);
+const projectCell = (f, id, field) => projectGroup(f, id)?.querySelector(`td[data-field="${field}"]`);
+const displayedProjects = f => [...f.document.querySelectorAll('[data-project-group]')].map(group => group.dataset.projectGroup);
+const selectBothProjects = f => f.run(`selectProjects(['${PROJECT_A}', '${PROJECT_B}'], { fromPicker: true })`);
 const clone = value => JSON.parse(JSON.stringify(value));
 const settle = async () => {
   await new Promise(resolve => setImmediate(resolve));
@@ -37,7 +51,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
   const paper = { isAttachment: () => false };
   const row = { id: 1, key: 'PAPERKEY', libraryID: 1, title: '未批注文献', authors: '张', year: '2026', citekey: 'Zhang2026', tags: [], annotations: [],
     values: C.blankValues(), highlights: {}, editable: true, paper, itemURL: 'zotero://select/library/items/PAPERKEY', pdfURL: '', attachmentID: null };
-  const rowB = { ...row, values: C.blankValues() };
+  const rowB = { ...row, values: C.blankValues(), highlights: {} };
   const loads = [], saves = [], logs = [], sourceCalls = [], apiCalls = [], keyCalls = [], batchSaves = [], importSaves = [];
   const pickerSelections = [], pickerCalls = [], fileReads = [], fileWrites = [], files = new Map();
   class FilePicker {
@@ -73,7 +87,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
       return { note: { key: 'NOTEKEY' }, values: { ...target.values, [id]: value }, highlights: { ...target.highlights, [id]: options.highlights || [] } };
     },
     paperSource: async (target, options) => {
-      sourceCalls.push({ rowID: target.id, mode: options.mode, maxChars: options.maxChars });
+      sourceCalls.push({ rowID: target.id, projectID: target.projectID, mode: options.mode, maxChars: options.maxChars });
       return { text: '论文原文片段：实验比较两种条件，结果有待结合原文核对。', label: '模拟提取文本', chars: 30, truncated: false,
         paper: { title: target.title, authors: target.authors, year: target.year, abstract: '模拟公开摘要' } };
     },
@@ -127,6 +141,7 @@ async function ui({ fail = false, saved = { version: 1, projects: {} },
   vm.runInContext(fs.readFileSync('plugin/content/ai-batch.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/highlights.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/display.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('plugin/content/project-picker.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('plugin/content/matrix.js', 'utf8'), context);
   await settle();
   const run = code => vm.runInContext(code, context);
@@ -177,6 +192,432 @@ test('successful project load renders all papers and clears the loading status',
     assert.ok(!f.document.querySelector('#status').textContent.includes('正在读取'));
     assert.equal(f.document.querySelector('#export').disabled, false);
     assert.equal(f.document.querySelector('#grid').hidden, false);
+  } finally { f.cleanup(); }
+});
+
+test('searching and applying a single project restores that project\'s existing analysis and field preferences', async () => {
+  const f = await ui({ saved: { version: 1, projects: {
+    [PROJECT_A]: { fields: [{ id: 'custom_project_a', label: '甲项目独有字段', requirement: '仅用于甲项目。', visible: true, archived: false }] },
+    [PROJECT_B]: { columns: ['remarks'] },
+  } } });
+  try {
+    f.row.values = { custom_project_a: '甲项目原有分析' };
+    f.rowB.values.remarks = '乙项目原有分析';
+    f.run('render()');
+    assert.equal(f.document.querySelector('#project').localName, 'button');
+    assert.equal(f.document.querySelector('#project').textContent, '测试项目 A');
+    await f.click(f.document.querySelector('#project'));
+    assert.equal(f.document.querySelector('#projectPickerDialog').open, true);
+    assert.equal(f.document.querySelector(`[data-project-check="${PROJECT_A}"]`).checked, true);
+    await f.input(f.document.querySelector('#rg-project-search'), '测试项目 B');
+    assert.equal(f.document.querySelector(`[data-project-check="${PROJECT_A}"]`), null);
+    assert.ok(f.document.querySelector(`[data-project-check="${PROJECT_B}"]`));
+    assert.ok(f.document.querySelector(`[data-project-selected="${PROJECT_A}"]`), 'search does not discard the current selection');
+    await f.click(f.document.querySelector(`[data-project-remove="${PROJECT_A}"]`));
+    await f.input(f.document.querySelector(`[data-project-check="${PROJECT_B}"]`), true, 'change');
+    assert.equal(f.run('state.project.id'), PROJECT_A, 'checking a result does not switch projects before Apply');
+    assert.match(f.cell('custom_project_a').textContent, /甲项目原有分析/);
+    await f.click(f.document.querySelector('#rg-project-apply'));
+    assert.equal(f.document.querySelector('#projectPickerDialog').open, false);
+    assert.equal(f.run('state.project.id'), PROJECT_B);
+    assert.equal(f.document.querySelector('#project').textContent, '测试项目 B');
+    assert.equal(f.cell('custom_project_a'), null);
+    assert.match(f.cell('remarks').textContent, /乙项目原有分析/);
+    assert.deepEqual([...f.document.querySelectorAll('td[data-field]')].map(cell => cell.dataset.field), ['remarks']);
+    assert.equal(f.loads.at(-1).projectID, PROJECT_B);
+    await f.click(f.document.querySelector('#project'));
+    await f.click(f.document.querySelector('#rg-project-clear'));
+    await f.input(f.document.querySelector('#rg-project-search'), '测试项目 A');
+    await f.input(f.document.querySelector(`[data-project-check="${PROJECT_A}"]`), true, 'change');
+    await f.click(f.document.querySelector('#rg-project-apply'));
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.match(f.cell('custom_project_a').textContent, /甲项目原有分析/);
+    assert.equal(f.rowB.values.remarks, '乙项目原有分析');
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length + f.apiCalls.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('refusing to discard an inline draft keeps the project picker closed and the draft intact', async () => {
+  const f = await ui();
+  try {
+    await f.dblclick(f.cell('remarks'));
+    const editor = f.document.querySelector('#inlineValue');
+    editor.value = '切换分类前尚未保存的草稿';
+    const loadsBefore = f.loads.length;
+    f.window.confirm = () => false;
+    await f.click(f.document.querySelector('#project'));
+    assert.equal(!!f.document.querySelector('#projectPickerDialog')?.open, false);
+    assert.equal(f.document.querySelector('#inlineValue'), editor);
+    assert.equal(editor.value, '切换分类前尚未保存的草稿');
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.equal(f.loads.length, loadsBefore);
+    assert.equal(f.saves.length, 0);
+    f.window.confirm = () => true;
+    await f.click(f.document.querySelector('#project'));
+    assert.equal(f.document.querySelector('#projectPickerDialog').open, true);
+    assert.equal(f.document.querySelector('#inlineValue'), null);
+    assert.equal(f.row.values.remarks, '', 'opening the picker never saves a discarded draft');
+  } finally { f.cleanup(); }
+});
+
+test('canceling a changed project selection leaves the current project, analysis and preferences untouched', async () => {
+  const f = await ui();
+  try {
+    f.row.values.remarks = '当前项目原有分析';
+    f.rowB.values.remarks = '另一项目原有分析';
+    f.run('render()');
+    const before = f.prefs(), loadsBefore = f.loads.length;
+    await f.click(f.document.querySelector('#project'));
+    await f.click(f.document.querySelector('#rg-project-clear'));
+    await f.input(f.document.querySelector(`[data-project-check="${PROJECT_B}"]`), true, 'change');
+    f.window.confirm = () => false;
+    await f.click(f.document.querySelector('#rg-project-cancel'));
+    assert.equal(f.document.querySelector('#projectPickerDialog').open, true);
+    f.window.confirm = () => true;
+    await f.click(f.document.querySelector('#rg-project-cancel'));
+    assert.equal(f.document.querySelector('#projectPickerDialog').open, false);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.match(f.cell('remarks').textContent, /当前项目原有分析/);
+    assert.equal(f.rowB.values.remarks, '另一项目原有分析');
+    assert.equal(f.loads.length, loadsBefore);
+    assert.deepEqual(f.prefs(), before);
+    await f.click(f.document.querySelector('#project'));
+    assert.equal(f.document.querySelector(`[data-project-check="${PROJECT_A}"]`).checked, true);
+    assert.ok(!f.document.querySelector(`[data-project-check="${PROJECT_B}"]`).checked);
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+for (const [name, control, dialog] of [
+  ['display options', '#displayOptions', '#displayDialog'],
+  ['project fields', '#columns', '#fieldManagerDialog'],
+  ['single-paper AI', '.ai-summary', '#aiSummaryDialog'],
+  ['batch AI', '#batchAI', '#aiBatchDialog'],
+  ['table import', '#importTable', '#tableImportDialog'],
+  ['template export', '#exportTemplate', '#templateDialog'],
+]) test(`the project picker and ${name} dialog are mutually exclusive in both directions`, async () => {
+  const otherFirst = await ui();
+  try {
+    await otherFirst.input(otherFirst.document.querySelector('[data-paper-select]'), true, 'change');
+    await otherFirst.click(otherFirst.document.querySelector(control));
+    assert.equal(otherFirst.document.querySelector(dialog).open, true);
+    const callsBefore = otherFirst.sourceCalls.length;
+    await otherFirst.click(otherFirst.document.querySelector('#project'));
+    assert.equal(!!otherFirst.document.querySelector('#projectPickerDialog')?.open, false);
+    assert.equal(otherFirst.document.querySelector(dialog).open, true);
+    assert.equal(otherFirst.sourceCalls.length, callsBefore);
+    assert.equal(otherFirst.run('state.project.id'), PROJECT_A);
+  } finally { otherFirst.cleanup(); }
+  const pickerFirst = await ui();
+  try {
+    await pickerFirst.input(pickerFirst.document.querySelector('[data-paper-select]'), true, 'change');
+    await pickerFirst.click(pickerFirst.document.querySelector('#project'));
+    assert.equal(pickerFirst.document.querySelector('#projectPickerDialog').open, true);
+    await pickerFirst.click(pickerFirst.document.querySelector(control));
+    assert.equal(!!pickerFirst.document.querySelector(dialog)?.open, false);
+    assert.equal(pickerFirst.document.querySelector('#projectPickerDialog').open, true);
+    assert.equal(pickerFirst.run('state.project.id'), PROJECT_A);
+    assert.equal(pickerFirst.sourceCalls.length + pickerFirst.apiCalls.length + pickerFirst.keyCalls.length, 0);
+  } finally { pickerFirst.cleanup(); }
+});
+
+test('selecting multiple categories displays the same paper in separate project sections with independent fields and highlights', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values = { findings: '甲项目的结论', remarks: '甲项目备注内容' };
+    f.rowB.values = { methods_sample: '乙项目的方法', remarks: '乙项目备注内容' };
+    f.row.highlights = { remarks: [{ start: 0, end: 2, color: 'green' }] };
+    f.rowB.highlights = { remarks: [{ start: 0, end: 2, color: 'pink' }] };
+    f.row.metadata = { year: '2024' };
+    f.rowB.metadata = { DOI: '10.1234/project-b' };
+    f.run('render()');
+    await f.click(f.document.querySelector('#project'));
+    await f.input(f.document.querySelector(`[data-project-check="${PROJECT_B}"]`), true, 'change');
+    await f.click(f.document.querySelector('#rg-project-apply'));
+    assert.equal(f.document.querySelector('#projectPickerDialog').open, false);
+    assert.deepEqual(displayedProjects(f), [PROJECT_A, PROJECT_B]);
+    assert.equal(f.document.querySelectorAll('#projectGroups table.matrix-table').length, 2);
+    assert.deepEqual(clone(f.run('state.rows.map(row => row.projectID)')), [PROJECT_A, PROJECT_B]);
+    assert.equal(f.run('state.rows[0].key'), f.run('state.rows[1].key'));
+    assert.notEqual(f.run('state.rows[0].contextKey'), f.run('state.rows[1].contextKey'));
+    assert.notEqual(projectCell(f, PROJECT_A, 'remarks').dataset.row, projectCell(f, PROJECT_B, 'remarks').dataset.row);
+    assert.match(projectGroup(f, PROJECT_A).querySelector('thead').textContent, /甲项目结论/);
+    assert.doesNotMatch(projectGroup(f, PROJECT_A).querySelector('thead').textContent, /乙项目方法/);
+    assert.match(projectGroup(f, PROJECT_B).querySelector('thead').textContent, /乙项目方法/);
+    assert.equal(projectCell(f, PROJECT_A, 'methods_sample'), null);
+    assert.equal(projectCell(f, PROJECT_B, 'findings'), null);
+    assert.match(projectCell(f, PROJECT_A, 'findings').textContent, /甲项目的结论/);
+    assert.match(projectCell(f, PROJECT_B, 'methods_sample').textContent, /乙项目的方法/);
+    assert.equal(projectCell(f, PROJECT_A, 'remarks').querySelector('[data-rg-highlight="green"]').textContent, '甲项');
+    assert.equal(projectCell(f, PROJECT_B, 'remarks').querySelector('[data-rg-highlight="pink"]').textContent, '乙项');
+    assert.equal(projectGroup(f, PROJECT_A).querySelector('[data-metadata="year"] .metadata-text').textContent, '2024');
+    assert.equal(projectGroup(f, PROJECT_B).querySelector('[data-metadata="DOI"] .metadata-text').textContent, '10.1234/project-b');
+    assert.deepEqual(f.prefs().lastProjectSelection, [PROJECT_A, PROJECT_B]);
+    assert.ok(f.document.querySelector(`[data-active-project="${PROJECT_A}"]`));
+    assert.ok(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length + f.apiCalls.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('editing and highlighting an inactive project row save only that row\'s owner context', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values.remarks = '甲项目原有备注';
+    f.rowB.values.remarks = '乙项目原有备注';
+    f.row.highlights.remarks = [{ start: 0, end: 2, color: 'green' }];
+    f.rowB.highlights.remarks = [{ start: 0, end: 2, color: 'pink' }];
+    await selectBothProjects(f);
+    await f.run(`focusProject('${PROJECT_A}')`);
+    await f.dblclick(projectCell(f, PROJECT_B, 'remarks'));
+    assert.equal(f.document.querySelector('#inlineValue').value, '乙项目原有备注');
+    assert.equal(f.run('state.editing.project.id'), PROJECT_B);
+    await f.input(f.document.querySelector('#inlineValue'), '乙项目修改后的备注');
+    await f.click(f.document.querySelector('#inlineSave'));
+    assert.equal(f.saves.length, 1);
+    assert.equal(f.saves[0].projectID, PROJECT_B);
+    assert.equal(f.saves[0].expected, '乙项目原有备注');
+    assert.match(projectCell(f, PROJECT_B, 'remarks').textContent, /乙项目修改后的备注/);
+    assert.match(projectCell(f, PROJECT_A, 'remarks').textContent, /甲项目原有备注/);
+    assert.equal(projectCell(f, PROJECT_A, 'remarks').querySelector('[data-rg-highlight="green"]').textContent, '甲项');
+    await f.run(`focusProject('${PROJECT_A}')`);
+    f.window.getSelection = () => ({ isCollapsed: false, toString: () => '乙项', removeAllRanges() {} });
+    f.context.ownerCell = projectCell(f, PROJECT_B, 'remarks').querySelector('.cell-text');
+    assert.equal(f.run('highlightManager.capture({element: ownerCell, start: 0, end: 2})'), true);
+    await f.click(f.document.querySelector('#rg-highlight-selection-toolbar [data-highlight-color="blue"]'));
+    assert.equal(f.saves.length, 2);
+    assert.equal(f.saves[1].projectID, PROJECT_B);
+    assert.deepEqual(f.saves[1].options.highlights, [{ start: 0, end: 2, color: 'blue' }]);
+    assert.equal(projectCell(f, PROJECT_B, 'remarks').querySelector('[data-rg-highlight="blue"]').textContent, '乙项');
+    assert.equal(projectCell(f, PROJECT_A, 'remarks').querySelector('[data-rg-highlight="green"]').textContent, '甲项');
+    assert.equal(projectCell(f, PROJECT_A, 'remarks').querySelector('[data-rg-highlight="blue"]'), null);
+    assert.equal(f.row.values.remarks, '甲项目原有备注');
+  } finally { f.cleanup(); }
+});
+
+test('single-paper AI takes its clicked row\'s schema and writes only that project even when another project is active', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values.findings = '甲项目人工结论';
+    f.rowB.values.remarks = '乙项目人工备注';
+    await selectBothProjects(f);
+    await f.run(`focusProject('${PROJECT_A}')`);
+    await f.click(projectGroup(f, PROJECT_B).querySelector('.ai-summary'));
+    assert.equal(f.run('aiManager.project.id'), PROJECT_B);
+    assert.deepEqual(clone(f.run('aiManager.fields.map(field => field.id)')), ['methods_sample', 'remarks']);
+    await f.run('aiManager.generate()');
+    const user = JSON.parse(f.apiCalls[0].options.body).messages.at(-1).content;
+    const packet = JSON.parse(user.slice(user.indexOf('{')));
+    assert.equal(packet.project.name, '测试项目 B');
+    assert.deepEqual(packet.requestedFields, [{ id: 'methods_sample', label: '乙项目方法', requirement: '只记录乙项目所需研究方法。' }]);
+    assert.equal(await f.run('aiManager.apply()'), true);
+    assert.equal(f.batchSaves.length, 1);
+    assert.equal(f.batchSaves[0].projectID, PROJECT_B);
+    assert.deepEqual(f.batchSaves[0].changes, { methods_sample: 'AI 草稿：乙项目方法' });
+    assert.match(projectCell(f, PROJECT_B, 'methods_sample').textContent, /AI 草稿：乙项目方法/);
+    assert.match(projectCell(f, PROJECT_A, 'findings').textContent, /甲项目人工结论/);
+    assert.equal(f.row.values.methods_sample, '');
+    assert.equal(f.rowB.values.remarks, '乙项目人工备注');
+  } finally { f.cleanup(); }
+});
+
+test('batch AI uses only selected papers and fields belonging to the active project', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values.remarks = '甲项目人工备注';
+    f.rowB.values.remarks = '乙项目人工备注';
+    await selectBothProjects(f);
+    await f.input(projectGroup(f, PROJECT_A).querySelector('[data-paper-select]'), true, 'change');
+    await f.input(projectGroup(f, PROJECT_B).querySelector('[data-paper-select]'), true, 'change');
+    await f.run(`focusProject('${PROJECT_A}')`);
+    assert.match(f.document.querySelector('#batchAI').textContent, /测试项目 A/);
+    assert.match(f.document.querySelector('#batchAI').textContent, /1/);
+    await f.click(f.document.querySelector('#batchAI'));
+    assert.equal(f.run('batchManager.project.id'), PROJECT_A);
+    assert.equal(f.run('batchManager.entries.length'), 1);
+    assert.equal(f.run('batchManager.entries[0].row.projectID'), PROJECT_A);
+    assert.deepEqual(clone(f.run('batchManager.fields.map(field => field.id)')), ['findings', 'remarks']);
+    await f.run('batchManager.generate()');
+    assert.equal(f.apiCalls.length, 1);
+    const user = JSON.parse(f.apiCalls[0].options.body).messages.at(-1).content;
+    const packet = JSON.parse(user.slice(user.indexOf('{')));
+    assert.equal(packet.project.name, '测试项目 A');
+    assert.deepEqual(packet.requestedFields.map(field => field.id), ['findings']);
+    assert.equal(await f.run('batchManager.apply()'), true);
+    assert.equal(f.importSaves.length, 1);
+    assert.equal(f.importSaves[0].projectID, PROJECT_A);
+    assert.equal(f.importSaves[0].operations.length, 1);
+    assert.equal(f.importSaves[0].operations[0].row.projectID, PROJECT_A);
+    assert.equal(f.rowB.values.methods_sample, '');
+    assert.equal(f.rowB.values.remarks, '乙项目人工备注');
+    f.run('batchManager.close(true)');
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    assert.equal(f.run('state.project.id'), PROJECT_B);
+    assert.match(f.document.querySelector('#batchAI').textContent, /测试项目 B/);
+    await f.click(f.document.querySelector('#batchAI'));
+    assert.equal(f.run('batchManager.project.id'), PROJECT_B);
+    assert.equal(f.run('batchManager.entries.length'), 1);
+    assert.equal(f.run('batchManager.entries[0].row.projectID'), PROJECT_B);
+    assert.deepEqual(clone(f.run('batchManager.fields.map(field => field.id)')), ['methods_sample', 'remarks']);
+  } finally { f.cleanup(); }
+});
+
+test('CSV, fill-in templates and table import stay within the active project when another section contains the same paper', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.values.findings = '甲项目不可覆盖的结论';
+    f.rowB.values.methods_sample = '乙项目原有方法';
+    await selectBothProjects(f);
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    f.queueFile({ name: '乙项目已填矩阵.csv' });
+    await f.click(f.document.querySelector('#export'));
+    const exported = Table.parse(f.fileWrites.at(-1).text);
+    assert.equal(exported.records.length, 1);
+    assert.equal(exported.records[0].cells[exported.headers.indexOf('项目标识')], PROJECT_B);
+    assert.ok(exported.headers.includes('乙项目方法'));
+    assert.ok(!exported.headers.includes('甲项目结论'));
+    assert.equal(exported.records[0].cells[exported.headers.indexOf('乙项目方法')], '乙项目原有方法');
+    assert.ok(!f.fileWrites.at(-1).text.includes('甲项目不可覆盖的结论'));
+    await f.click(f.document.querySelector('#exportTemplate'));
+    assert.match(f.document.querySelector('#templateContext').textContent, /测试项目 B.*1 篇文献/);
+    f.queueFile({ name: '乙项目待填模板.csv' });
+    await f.click(f.document.querySelector('#templateSave'));
+    const template = Table.parse(f.fileWrites.at(-1).text);
+    assert.deepEqual(template.headers.slice(10), ['乙项目方法 [methods_sample]', '乙项目备注 [remarks]']);
+    assert.equal(template.records.length, 2);
+    assert.equal(template.records[1].cells[2], PROJECT_B);
+    await f.click(f.document.querySelector('#importTable'));
+    assert.equal(f.run('tableManager.project.id'), PROJECT_B);
+    assert.equal(f.run('tableManager.rows.length'), 1);
+    assert.equal(f.run('tableManager.rows[0].projectID'), PROJECT_B);
+    assert.deepEqual(clone(f.run('tableManager.fields.map(field => field.id)')), ['methods_sample', 'remarks']);
+    const text = '项目标识\t文献标识\t乙项目方法 [methods_sample]\n'
+      + [PROJECT_A, f.row.itemURL, '不能导入甲项目这一行'].join('\t') + '\n'
+      + [PROJECT_B, f.rowB.itemURL, '乙项目外部 AI 方法'].join('\t');
+    await f.input(f.document.querySelector('#rg-table-source'), text);
+    await f.click(f.document.querySelector('#rg-table-parse'));
+    await f.input(f.document.querySelector('#rg-table-overwrite'), true, 'change');
+    assert.equal(f.run('tableManager.plan.stats.ready'), 1);
+    assert.equal(f.run('tableManager.plan.stats.error'), 1);
+    await f.click(f.document.querySelector('#rg-table-apply'));
+    assert.equal(f.importSaves.length, 1);
+    assert.equal(f.importSaves[0].projectID, PROJECT_B);
+    assert.equal(f.importSaves[0].operations.length, 1);
+    assert.equal(f.importSaves[0].operations[0].row.projectID, PROJECT_B);
+    assert.deepEqual(f.importSaves[0].operations[0].changes, { methods_sample: '乙项目外部 AI 方法' });
+    assert.match(projectCell(f, PROJECT_B, 'methods_sample').textContent, /乙项目外部 AI 方法/);
+    assert.match(projectCell(f, PROJECT_A, 'findings').textContent, /甲项目不可覆盖的结论/);
+  } finally { f.cleanup(); }
+});
+
+test('field and display changes apply only to the active section and preserve the other project\'s preferences', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    f.row.tags = ['甲项目标签'];
+    f.rowB.tags = ['乙项目标签'];
+    await selectBothProjects(f);
+    const aBefore = clone(f.prefs().projects[PROJECT_A]);
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    await f.click(f.document.querySelector('#columns'));
+    assert.deepEqual(clone(f.run('fieldManager.options.getFields().map(field => field.id)')), ['methods_sample', 'remarks']);
+    f.context.changedFields = f.run('fieldManager.options.getFields().map(field => ({...field, label: field.id === "methods_sample" ? "乙项目修改后的方法字段" : field.label}))');
+    await f.run('fieldManager.options.saveFields(changedFields)');
+    f.run('fieldManager.close(true)');
+    assert.match(projectGroup(f, PROJECT_B).querySelector('thead').textContent, /乙项目修改后的方法字段/);
+    assert.match(projectGroup(f, PROJECT_A).querySelector('thead').textContent, /甲项目结论/);
+    await f.input(f.document.querySelector('#showTags'), false, 'change');
+    assert.equal(projectGroup(f, PROJECT_B).querySelector('.tags').hidden, true);
+    assert.equal(projectGroup(f, PROJECT_A).querySelector('.tags').hidden, false);
+    await f.click(f.document.querySelector('#displayOptions'));
+    await f.input(f.document.querySelector('[data-metadata-column="abstractNote"]'), true, 'change');
+    await f.click(f.document.querySelector('#rg-display-save'));
+    assert.deepEqual(f.prefs().projects[PROJECT_B].display, { showTags: false, metadataColumns: ['DOI', 'abstractNote'] });
+    assert.deepEqual(f.prefs().projects[PROJECT_A], aBefore);
+    assert.deepEqual([...projectGroup(f, PROJECT_A).querySelectorAll('td.metadata-cell')].map(cell => cell.dataset.metadata), ['year']);
+    assert.deepEqual([...projectGroup(f, PROJECT_B).querySelectorAll('td.metadata-cell')].map(cell => cell.dataset.metadata), ['DOI', 'abstractNote']);
+  } finally { f.cleanup(); }
+});
+
+test('multi-project selection accepts native descriptors, survives refresh and reopening, and single-project selection retains its old meaning', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  let saved;
+  try {
+    await f.run("selectProjects([{libraryID:1,collectionKey:'PROJECTA'}, {libraryID:1,collectionKey:'PROJECTB'}, {libraryID:1,collectionKey:'PROJECTA'}], {fromPicker:true})");
+    assert.deepEqual(displayedProjects(f), [PROJECT_A, PROJECT_B]);
+    await f.run(`focusProject('${PROJECT_B}')`);
+    await f.run('reload()');
+    assert.deepEqual(displayedProjects(f), [PROJECT_A, PROJECT_B]);
+    assert.equal(f.run('state.project.id'), PROJECT_B);
+    await f.click(f.document.querySelector('#project'));
+    assert.equal(f.document.querySelector(`[data-project-check="${PROJECT_A}"]`).checked, true);
+    assert.equal(f.document.querySelector(`[data-project-check="${PROJECT_B}"]`).checked, true);
+    await f.click(f.document.querySelector('#rg-project-cancel'));
+    saved = f.prefs();
+    assert.deepEqual(saved.lastProjectSelection, [PROJECT_A, PROJECT_B]);
+    await f.run(`selectProject('${PROJECT_A}')`);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.deepEqual(clone(f.run('state.rows.map(row => row.projectID)')), [PROJECT_A]);
+    assert.match(f.document.querySelector('#grid thead').textContent, /甲项目结论/);
+    assert.doesNotMatch(f.document.querySelector('#grid thead').textContent, /乙项目方法/);
+    assert.deepEqual(f.prefs().lastProjectSelection, [PROJECT_A]);
+  } finally { f.cleanup(); }
+  const reopened = await ui({ saved });
+  try {
+    assert.deepEqual(displayedProjects(reopened), [PROJECT_A, PROJECT_B]);
+    assert.equal(reopened.run('state.project.id'), PROJECT_B);
+    assert.equal(reopened.document.querySelectorAll('[data-paper-select]').length, 2);
+  } finally { reopened.cleanup(); }
+});
+
+test('an invalid category in a multi-project request does not silently replace the current selection with its valid subset', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    await selectBothProjects(f);
+    const before = f.prefs(), loadsBefore = f.loads.length;
+    let rejected = false;
+    try { rejected = await f.run(`selectProjects(['${PROJECT_B}', 'user:collection:MISSING0'], {fromPicker:true})`) === false; }
+    catch (_) { rejected = true; }
+    assert.equal(rejected, true);
+    assert.deepEqual(displayedProjects(f), [PROJECT_A, PROJECT_B]);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.deepEqual(f.prefs(), before);
+    assert.equal(f.loads.length, loadsBefore);
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('multi-project replacement and active-project changes respect unsaved drafts and modal ownership', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    await selectBothProjects(f);
+    await f.run(`focusProject('${PROJECT_A}')`);
+    await f.dblclick(projectCell(f, PROJECT_A, 'remarks'));
+    const editor = f.document.querySelector('#inlineValue');
+    editor.value = '甲项目未保存的草稿';
+    f.window.confirm = () => false;
+    await f.run(`focusProject('${PROJECT_B}')`);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    await f.run(`selectProjects(['${PROJECT_B}'], {fromPicker:true})`);
+    assert.deepEqual(displayedProjects(f), [PROJECT_A, PROJECT_B]);
+    assert.equal(f.document.querySelector('#inlineValue'), editor);
+    assert.equal(editor.value, '甲项目未保存的草稿');
+    f.window.confirm = () => true;
+    f.run('closeEditor(true)');
+    await f.click(f.document.querySelector('#displayOptions'));
+    assert.equal(f.document.querySelector('#displayDialog').open, true);
+    await f.run(`focusProject('${PROJECT_B}')`);
+    await f.run(`selectProjects(['${PROJECT_B}'], {fromPicker:true})`);
+    assert.deepEqual(displayedProjects(f), [PROJECT_A, PROJECT_B]);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.equal(f.document.querySelector('#displayDialog').open, true);
+    f.run('displayManager.close(true)');
+    await f.click(projectGroup(f, PROJECT_B).querySelector('.ai-summary'));
+    assert.equal(f.run('aiManager.project.id'), PROJECT_B);
+    await f.run(`focusProject('${PROJECT_B}')`);
+    await f.run(`selectProject('${PROJECT_B}')`);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.deepEqual(displayedProjects(f), [PROJECT_A, PROJECT_B]);
+    assert.equal(f.run('aiManager.isOpen()'), true);
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length + f.apiCalls.length, 0);
   } finally { f.cleanup(); }
 });
 

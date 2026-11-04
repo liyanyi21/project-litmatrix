@@ -28,6 +28,26 @@ function fixture() {
     project: value => { project = value; }, fields: value => { fields = value; }, rows: value => { rows = value; },
     save: fn => { save = fn; }, beforeSave: fn => { beforeSave = fn; }, cleared: () => cleared };
 }
+function contextFixture() {
+  const f = fixture();
+  const projects = { 'project-A': { id: 'project-A', name: '项目 A' }, 'project-B': { id: 'project-B', name: '项目 B' } };
+  const fields = { 'project-A': [{ ...f.field, label: '甲项目事实', requirement: '甲项目要求' }], 'project-B': [{ ...f.field, label: '乙项目事实', requirement: '乙项目要求' }] };
+  const rowA = f.row;
+  Object.assign(rowA, { projectID: 'project-A', contextKey: 'project-A::1', values: { findings: '甲项目已有事实。' }, highlights: { findings: [{ start: 0, end: 2, color: 'green' }] } });
+  const rowB = { ...rowA, projectID: 'project-B', contextKey: 'project-B::1', values: { findings: '乙项目已有结果。' }, highlights: { findings: [{ start: 2, end: 4, color: 'pink' }] } };
+  f.cell.setAttribute('data-row', rowA.contextKey);
+  f.cell.replaceChildren(H.render(f.doc, rowA.values.findings, rowA.highlights.findings));
+  const cellB = f.cell.cloneNode(false); cellB.setAttribute('data-row', rowB.contextKey);
+  cellB.append(H.render(f.doc, rowB.values.findings, rowB.highlights.findings));
+  f.doc.querySelector('#target').append(cellB);
+  f.rows([rowB, rowA]);
+  f.manager.options.getRowID = row => row.contextKey || String(row.id);
+  f.manager.options.getProjectForRow = row => projects[row.projectID];
+  f.manager.options.getFields = row => fields[row.projectID];
+  f.save(async (...args) => { f.saved.push(args); args[1].highlights.findings = copy(args[5].highlights); });
+  return { ...f, projects, fields, rowA, rowB, cellB,
+    captureB: (start = 0, end = 2) => f.manager.capture({ element: cellB, start, end }) };
+}
 function fakeSelection(startNode, startOffset, endNode, endOffset) {
   const range = { startContainer: startNode, startOffset, endContainer: endNode, endOffset, collapsed: false,
     cloneRange() {
@@ -177,5 +197,62 @@ test('selection listeners can clear a collapsed selection and disposal removes c
 test('notification failures cannot turn a committed highlight save into a reported failure', async () => {
   const f = fixture(); f.manager.options.notify = () => { throw new Error('display failed'); };
   f.capture(); assert.equal(await f.manager.apply('green'), true); assert.equal(f.saved.length, 1);
+  assert.equal(f.manager.isOpen(), false);
+});
+
+test('same-paper rows in different projects capture their context and save only the owning project text and marks', async () => {
+  const f = contextFixture(), untouched = copy({ values: f.rowA.values, highlights: f.rowA.highlights });
+  assert.equal(f.captureB(), true);
+  assert.equal(f.manager.snapshot.contextKey, 'project-B::1');
+  assert.equal(f.manager.snapshot.project.id, 'project-B');
+  assert.equal(f.manager.snapshot.field.label, '乙项目事实');
+  assert.deepEqual(f.manager.snapshot.ranges, [{ start: 2, end: 4, color: 'pink' }]);
+  assert.equal(await f.manager.apply('blue'), true);
+  assert.equal(f.saved.length, 1);
+  const [project, row, field, text, expected, options] = f.saved[0];
+  assert.equal(project.id, 'project-B'); assert.equal(row, f.rowB); assert.equal(field, 'findings');
+  assert.equal(text, '乙项目已有结果。'); assert.equal(expected, text);
+  assert.deepEqual(options.expectedHighlights, [{ start: 2, end: 4, color: 'pink' }]);
+  assert.deepEqual(options.highlights, [{ start: 0, end: 2, color: 'blue' }, { start: 2, end: 4, color: 'pink' }]);
+  assert.deepEqual({ values: f.rowA.values, highlights: f.rowA.highlights }, untouched);
+  assert.equal(f.capture(), true);
+  assert.equal(await f.manager.apply('yellow'), true);
+  assert.equal(f.saved[1][0].id, 'project-A'); assert.equal(f.saved[1][1], f.rowA);
+});
+
+test('a different project schema or primary project does not invalidate this row, while its owner schema does', async () => {
+  const f = contextFixture(); assert.equal(f.captureB(), true);
+  f.project({ id: 'unrelated-primary-project' });
+  f.fields['project-A'] = [{ ...f.field, requirement: '甲项目独立修改' }];
+  assert.equal(await f.manager.apply('yellow'), true);
+  assert.equal(f.saved[0][0].id, 'project-B');
+  assert.equal(f.captureB(), true);
+  f.fields['project-B'] = [{ ...f.field, requirement: '乙项目已修改要求' }];
+  assert.equal(await f.manager.apply('green'), false);
+  assert.match(f.manager.status.textContent, /项目字段已变化/);
+  assert.equal(f.saved.length, 1);
+});
+
+test('owner, context key, cell context or removal of a context cannot silently redirect a highlight to its duplicate paper', async () => {
+  for (const mutate of [
+    f => { f.projects['project-B'] = { id: 'replacement-owner' }; },
+    f => { f.rowB.contextKey = 'replacement-context'; },
+    f => { f.cellB.setAttribute('data-row', f.rowA.contextKey); },
+    f => { f.cellB.setAttribute('data-field', 'other-field'); },
+    f => { f.rows([f.rowA]); },
+    f => { f.rowB.projectID = 'project-A'; },
+  ]) {
+    const f = contextFixture(); assert.equal(f.captureB(), true); mutate(f);
+    assert.equal(await f.manager.apply('yellow'), false);
+    assert.equal(f.saved.length, 0);
+    assert.match(f.manager.status.textContent, /变化/);
+  }
+});
+
+test('ambiguous row contexts are rejected instead of choosing an arbitrary duplicate', () => {
+  const f = contextFixture();
+  f.manager.options.getRowID = row => String(row.id);
+  f.cellB.setAttribute('data-row', '1');
+  assert.equal(f.captureB(), false);
   assert.equal(f.manager.isOpen(), false);
 });

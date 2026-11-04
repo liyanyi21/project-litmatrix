@@ -61,6 +61,23 @@ function fixture() {
     generate: value => { generate = value; }, save: value => { save = value; },
     configProvider: value => { configProvider = value; }, sourceProvider: value => { sourceProvider = value; }, settings: () => settings };
 }
+function contextFixture() {
+  const f = fixture();
+  const owners = { 'project-A': { id: 'project-A', name: '项目 A' }, 'project-B': { id: 'project-B', name: '项目 B' } };
+  const fields = {
+    'project-A': [{ id: 'findings', label: '甲项目事实', requirement: '甲项目要求' }],
+    'project-B': [{ id: 'findings', label: '乙项目事实', requirement: '乙项目要求' }, { id: 'b_extra', label: '乙项目补充', requirement: '只用于乙项目' }],
+  };
+  const rowA = f.row;
+  Object.assign(rowA, { libraryID: 1, projectID: 'project-A', contextKey: 'project-A::1',
+    values: { findings: '甲项目人工事实' }, highlights: { findings: [{ start: 0, end: 2, color: 'green' }] } });
+  const rowB = { ...rowA, projectID: 'project-B', contextKey: 'project-B::1',
+    values: { findings: '乙项目人工结果', b_extra: '' }, highlights: { findings: [{ start: 2, end: 4, color: 'pink' }], b_extra: [] } };
+  const projectsSeen = [], fieldsSeen = [];
+  f.manager.options.getProject = row => { projectsSeen.push(row); return owners[row?.projectID]; };
+  f.manager.options.getFields = row => { fieldsSeen.push(row); return fields[row?.projectID] || []; };
+  return { ...f, owners, ownerFields: fields, rowA, rowB, projectsSeen, fieldsSeen };
+}
 
 test('opening AI preview only prepares local text and defaults to empty fields, with explicit destination disclosure', async () => {
   const f = fixture();
@@ -441,4 +458,73 @@ test('single-paper AI updates only saved formatting snapshots from the repositor
     return { values: { findings: changes.findings }, highlights: { findings: [{ start: 5, end: 11, color: 'green' }] } };
   });
   assert.equal(await f.manager.apply(), true);
+});
+
+test('single-paper AI resolves project and schema from the selected row context and writes only that duplicate paper record', async () => {
+  const f = contextFixture(), untouched = copy({ values: f.rowA.values, highlights: f.rowA.highlights });
+  await f.manager.open(f.rowB);
+  assert.equal(f.manager.project.id, 'project-B');
+  assert.deepEqual(f.manager.fields.map(field => field.id), ['findings', 'b_extra']);
+  assert.equal(f.manager.fields[0].requirement, '乙项目要求');
+  assert.equal(f.manager.expected.findings, '乙项目人工结果');
+  assert.deepEqual(f.manager.expectedHighlights.findings, [{ start: 2, end: 4, color: 'pink' }]);
+  assert.ok(f.projectsSeen.every(row => row === f.rowB));
+  assert.ok(f.fieldsSeen.every(row => row === f.rowB));
+  assert.equal(f.sources[0][0], f.rowB);
+  f.manager.selected = new Set(['findings']);
+  f.generate(async () => ({ findings: '乙项目新事实' }));
+  await f.manager.generate();
+  assert.equal(f.generated[0].project.id, 'project-B');
+  assert.equal(f.generated[0].fields[0].label, '乙项目事实');
+  f.save(async (project, row, changes, expected, options) => {
+    assert.equal(project.id, 'project-B'); assert.equal(row, f.rowB);
+    assert.deepEqual(expected, { findings: '乙项目人工结果' });
+    assert.deepEqual(options.expectedHighlights, { findings: [{ start: 2, end: 4, color: 'pink' }] });
+    row.values.findings = changes.findings;
+    return { values: copy(row.values), highlights: copy(row.highlights) };
+  });
+  assert.equal(await f.manager.apply(), true);
+  assert.equal(f.rowB.values.findings, '乙项目新事实');
+  assert.deepEqual({ values: f.rowA.values, highlights: f.rowA.highlights }, untouched);
+  assert.equal(f.writes[0][1].contextKey, 'project-B::1');
+  f.manager.close(true);
+  await f.manager.open(f.rowA);
+  assert.equal(f.manager.project.id, 'project-A');
+  assert.deepEqual(f.manager.fields.map(field => field.id), ['findings']);
+  assert.equal(f.manager.expected.findings, '甲项目人工事实');
+});
+
+test('another project schema changes independently while this row owner and schema continue to govern generation and save', async () => {
+  const f = contextFixture(); await f.manager.open(f.rowB);
+  f.ownerFields['project-A'] = [{ id: 'different', label: '其他项目新字段', requirement: '无关变更' }];
+  f.project({ id: 'unrelated-primary-project' });
+  f.generate(async () => ({ findings: '乙项目新事实' }));
+  f.manager.selected = new Set(['findings']);
+  await f.manager.generate();
+  assert.equal(f.generated.length, 1);
+  assert.equal(f.manager.error, '');
+  assert.equal(await f.manager.apply(), true);
+  assert.equal(f.writes[0][0].id, 'project-B');
+  assert.equal(f.writes[0][1].projectID, 'project-B');
+});
+
+test('a changed row owner or owner schema rejects generation or saving and retains the unsaved context draft', async () => {
+  for (const mutate of [
+    f => { f.owners['project-B'] = { id: 'replacement-project', name: '不同项目' }; },
+    f => { f.rowB.projectID = 'project-A'; },
+    f => { f.ownerFields['project-B'] = [{ id: 'findings', label: '乙项目事实', requirement: '修改后的乙要求' }]; },
+  ]) {
+    const f = contextFixture(); await f.manager.open(f.rowB);
+    f.manager.selected = new Set(['findings']);
+    f.generate(async () => ({ findings: '待核对的乙项目草稿' }));
+    await f.manager.generate();
+    assert.equal(f.generated.length, 1);
+    mutate(f);
+    assert.equal(await f.manager.apply(), false);
+    assert.equal(f.writes.length, 0);
+    assert.equal(f.manager.drafts.get('findings'), '待核对的乙项目草稿');
+    assert.match(f.document.querySelector('#rg-ai-error').textContent, /项目.*变化/);
+    await f.manager.generate();
+    assert.equal(f.generated.length, 1, 'owner/schema mismatch must block another API call too');
+  }
 });

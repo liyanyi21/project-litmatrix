@@ -57,12 +57,12 @@
     async open(row) {
       if (this.isOpen()) { this.dialog.focus(); return; }
       if (this.options.beforeOpen && !await this.options.beforeOpen()) return;
-      const project = this.options.getProject();
+      const project = this.options.getProject(row);
       if (!project) { this.options.notify?.("请先选择一个研究项目。"); return; }
       this.ensureDialog();
       this.row = row;
       this.project = { ...project };
-      this.fields = clone(this.options.getFields().filter(field => !field.archived));
+      this.fields = clone(this.options.getFields(row).filter(field => !field.archived));
       this.fieldSignature = signature(this.fields);
       this.expected = Object.fromEntries(this.fields.map(field => [field.id, String(row.values?.[field.id] || "")]));
       this.expectedHighlights = Object.fromEntries(this.fields.map(field => [field.id,
@@ -102,8 +102,8 @@
       this.syncControls();
     }
     guardProject() {
-      if (this.options.getProject()?.id !== this.project.id) throw new Error("当前项目已变化，请保留需要的草稿，关闭后重新打开 AI 总结。");
-      if (signature(this.options.getFields()) !== this.fieldSignature) throw new Error("项目字段或填写要求已经变化，请关闭后重新生成草稿。");
+      if (this.options.getProject(this.row)?.id !== this.project.id) throw new Error("当前项目已变化，请保留需要的草稿，关闭后重新打开 AI 总结。");
+      if (signature(this.options.getFields(this.row)) !== this.fieldSignature) throw new Error("项目字段或填写要求已经变化，请关闭后重新生成草稿。");
     }
     async loadSource(mode) {
       if (this.generating || this.saving) return;

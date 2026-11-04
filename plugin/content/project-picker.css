@@ -1,0 +1,39 @@
+/* Searchable collection picker; scoped to this dialog. */
+#projectPickerDialog { width:min(970px,96vw); max-height:92vh; padding:24px; }
+#projectPickerDialog h2 { margin:0; font-size:20px; }
+#projectPickerDialog h3 { margin:0; font-size:13px; }
+#projectPickerDialog .rg-project-heading,#projectPickerDialog .rg-project-actions,#projectPickerDialog .rg-project-footer { display:flex; align-items:center; gap:10px; }
+#projectPickerDialog .rg-project-heading { justify-content:space-between; }
+#projectPickerDialog .rg-project-close { border:0; background:none; padding:0 5px; font-size:25px; }
+#projectPickerDialog .rg-project-hint { color:var(--muted); font-size:12px; line-height:1.6; margin:10px 0 14px; }
+#projectPickerDialog .rg-project-search-row input { width:100%; border:1px solid var(--line); border-radius:7px; background:var(--surface); color:var(--ink); padding:9px 12px; }
+#projectPickerDialog .rg-project-actions { flex-wrap:wrap; padding:11px 0; }
+#rg-project-results-count { flex:1; font-size:12px; color:var(--muted); }
+#projectPickerDialog .rg-project-actions button { font-size:12px; padding:6px 9px; }
+#projectPickerDialog .rg-project-panels { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(230px,1fr); gap:13px; }
+#projectPickerDialog .rg-project-tree-panel,#projectPickerDialog .rg-project-selected-panel { border:1px solid var(--line); border-radius:8px; background:var(--surface); min-width:0; }
+#projectPickerDialog .rg-project-tree-scroll { height:min(47vh,470px); overflow:auto; padding:9px; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+#projectPickerDialog .rg-project-library + .rg-project-library { margin-top:15px; }
+#projectPickerDialog .rg-project-library > h3 { color:var(--muted); padding:5px 7px 7px; overflow-wrap:anywhere; }
+#projectPickerDialog ul[role="tree"],#projectPickerDialog ul[role="group"] { list-style:none; margin:0; padding:0; }
+#projectPickerDialog ul[role="group"] { padding-left:22px; }
+#projectPickerDialog .rg-project-row { display:flex; align-items:flex-start; gap:3px; padding:3px 1px; min-height:31px; border-radius:5px; }
+#projectPickerDialog .rg-project-row:hover { background:var(--bg); }
+#projectPickerDialog .rg-project-toggle { flex:none; width:23px; height:25px; padding:0; border:0; background:none; font-size:15px; }
+#projectPickerDialog .rg-project-toggle-space { flex:none; width:23px; }
+#projectPickerDialog .rg-project-name { display:flex; align-items:flex-start; gap:7px; min-width:0; flex:1; line-height:1.5; padding:2px 3px; font-size:13px; cursor:pointer; }
+#projectPickerDialog .rg-project-name input { flex:none; margin-top:3px; }
+#projectPickerDialog .rg-project-name > span { overflow-wrap:anywhere; }
+#projectPickerDialog .rg-project-selected-panel { padding:12px; background:var(--bg); }
+#projectPickerDialog .rg-project-selected { max-height:min(41vh,410px); overflow:auto; margin-top:10px; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+#projectPickerDialog .rg-project-selected-item { display:flex; align-items:flex-start; gap:8px; border-top:1px solid var(--line); padding:9px 0; }
+#projectPickerDialog .rg-project-selected-item:first-child { border-top:0; padding-top:0; }
+#projectPickerDialog .rg-project-selected-item > div { min-width:0; flex:1; }
+#projectPickerDialog .rg-project-selected-name { display:block; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#projectPickerDialog .rg-project-selected-item small { display:block; color:var(--muted); font-size:10px; line-height:1.5; margin-top:3px; overflow-wrap:anywhere; }
+#projectPickerDialog .rg-project-selected-item button { background:none; border:0; padding:0 5px; font-size:18px; flex:none; }
+#projectPickerDialog .rg-project-missing .rg-project-selected-name { color:var(--danger); }
+#projectPickerDialog .rg-project-empty { font-size:12px; color:var(--muted); line-height:1.7; padding:10px; margin:0; }
+#projectPickerDialog .rg-project-error { color:var(--danger); white-space:pre-wrap; min-height:18px; font-size:12px; margin:12px 0; }
+#projectPickerDialog .rg-project-footer { justify-content:flex-end; border-top:1px solid var(--line); padding-top:13px; }
+@media(max-width:650px) { #projectPickerDialog { padding:16px; } #projectPickerDialog .rg-project-panels { grid-template-columns:1fr; } #projectPickerDialog .rg-project-tree-scroll { height:34vh; } #projectPickerDialog .rg-project-selected { max-height:17vh; } }

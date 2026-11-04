@@ -87,13 +87,17 @@
       if (!captured) { this.clear(); return false; }
       return this.capture(captured);
     }
+    rowID(row) { return String(this.options.getRowID ? this.options.getRowID(row) : row.id); }
+    projectForRow(row) { return this.options.getProjectForRow ? this.options.getProjectForRow(row) : this.options.getProject(); }
     capture({ element: selectedElement, start, end } = {}) {
       if (this.busy || this.disposed) return false;
-      const project = this.options.getProject();
       const fieldID = selectedElement?.getAttribute?.("data-field");
       const rowID = selectedElement?.getAttribute?.("data-row");
-      const field = this.options.getFields().find(field => field.id === fieldID && !field.archived);
-      const row = this.options.getRows().find(row => String(row.id) === rowID);
+      const matchingRows = this.options.getRows().filter(row => this.rowID(row) === rowID);
+      const row = matchingRows.length === 1 ? matchingRows[0] : null;
+      const project = row && this.projectForRow(row);
+      const fields = row ? this.options.getFields(row) : [];
+      const field = fields.find(field => field.id === fieldID && !field.archived);
       if (!project || !field || !row?.editable || !selectedElement?.matches?.(".cell-text[data-row][data-field]")
         || !selectedElement.isConnected || selectedElement.closest("dialog,[contenteditable=true],.editing-cell")
         || !Number.isInteger(start) || !Number.isInteger(end) || end <= start) { this.clear(); return false; }
@@ -101,7 +105,7 @@
       if (selectedElement.textContent !== text || start < 0 || end > text.length) { this.clear(); return false; }
       let ranges;
       try { ranges = normalize(text, row.highlights?.[fieldID]); } catch (_) { this.clear(); return false; }
-      this.snapshot = { project: { ...project }, field: { ...field }, schema: fieldSignature(this.options.getFields()),
+      this.snapshot = { project: { ...project }, field: { ...field }, schema: fieldSignature(fields), contextKey: this.rowID(row),
         row: { id: row.id, key: row.key, libraryID: row.libraryID }, text, ranges: copy(ranges), start, end, element: selectedElement };
       this.context.textContent = `${field.label} · 已选 ${end - start} 字符`;
       this.status.textContent = "点颜色立即高亮并自动保存到当前项目笔记。";
@@ -109,11 +113,15 @@
     }
     guard() {
       const snap = this.snapshot;
-      if (!snap || this.options.getProject()?.id !== snap.project.id) throw new Error("当前项目已变化，请重新选择文字。");
-      if (fieldSignature(this.options.getFields()) !== snap.schema) throw new Error("项目字段已变化，请重新选择文字。");
-      const row = this.options.getRows().find(row => row.id === snap.row.id && row.key === snap.row.key && row.libraryID === snap.row.libraryID);
-      if (!row?.editable || !snap.element.isConnected || snap.element.textContent !== snap.text
+      if (!snap) throw new Error("当前项目已变化，请重新选择文字。");
+      const matchingRows = this.options.getRows().filter(row => this.rowID(row) === snap.contextKey &&
+        row.id === snap.row.id && row.key === snap.row.key && row.libraryID === snap.row.libraryID);
+      const row = matchingRows.length === 1 ? matchingRows[0] : null;
+      if (!row?.editable || !snap.element.isConnected || snap.element.getAttribute("data-row") !== snap.contextKey
+        || snap.element.getAttribute("data-field") !== snap.field.id || snap.element.textContent !== snap.text
         || String(row.values?.[snap.field.id] || "") !== snap.text) throw new Error("单元格内容已变化，请重新选择文字。");
+      if (this.projectForRow(row)?.id !== snap.project.id) throw new Error("当前项目已变化，请重新选择文字。");
+      if (fieldSignature(this.options.getFields(row)) !== snap.schema) throw new Error("项目字段已变化，请重新选择文字。");
       if (JSON.stringify(normalize(snap.text, row.highlights?.[snap.field.id])) !== JSON.stringify(snap.ranges)) {
         throw new Error("单元格高亮已变化，请重新选择文字。");
       }

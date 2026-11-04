@@ -54,6 +54,128 @@ test('one paper saves independent notes in two projects; switching back restores
   assert.notEqual(a.note.id, b.note.id);
   assert.equal(f.parent.notes.length, 2);
 });
+
+test('loading multiple projects retains duplicate paper identities with independent values, highlights and schemas', async () => {
+  const f = fixture();
+  f.projectA.fields = [{ id: 'remarks', label: '项目甲备注', aliases: ['甲旧名'], visible: true }];
+  f.projectB.fields = [{ id: 'remarks', label: '项目乙备注', aliases: ['乙旧名'], visible: true }];
+  await f.repo.saveField(f.projectA, f.row, 'remarks', '项目甲的事实', '', {
+    highlights: [{ start: 0, end: 3, color: 'yellow' }], expectedHighlights: [],
+  });
+  await f.repo.saveField(f.projectB, f.row, 'remarks', '项目乙的事实', '', {
+    highlights: [{ start: 3, end: 6, color: 'blue' }], expectedHighlights: [],
+  });
+  const rows = await f.repo.loadProjects([f.projectB, f.projectA]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => [row.id, row.key]), [[f.parent.id, f.parent.key], [f.parent.id, f.parent.key]]);
+  assert.deepEqual(rows.map(row => row.projectID), [f.projectB.id, f.projectA.id]);
+  assert.deepEqual(rows.map(row => row.projectName), [f.projectB.name, f.projectA.name]);
+  assert.deepEqual(rows.map(row => row.values.remarks), ['项目乙的事实', '项目甲的事实']);
+  assert.deepEqual(rows.map(row => row.highlights.remarks), [
+    [{ start: 3, end: 6, color: 'blue' }], [{ start: 0, end: 3, color: 'yellow' }],
+  ]);
+  assert.notEqual(rows[0].noteKey, rows[1].noteKey);
+  assert.notEqual(rows[0].project.fields, f.projectB.fields);
+  assert.notEqual(rows[0].project.fields[0].aliases, f.projectB.fields[0].aliases);
+  assert.notEqual(rows[0].project.fields, rows[1].project.fields);
+  rows[0].project.fields[0].aliases.push('只改返回快照');
+  rows[0].values.remarks = '只改乙项目行';
+  assert.deepEqual(f.projectB.fields[0].aliases, ['乙旧名']);
+  assert.equal(rows[1].values.remarks, '项目甲的事实');
+  assert.equal((await f.repo.noteFor(f.parent, f.projectB)).values.remarks, '项目乙的事实');
+});
+
+test('multi-project loading keeps cross-library equal collection and paper keys separate', async () => {
+  const f = fixture();
+  const group = { libraryID: 2, libraryType: 'group', groupID: 200, name: 'Fixture Group', editable: true };
+  const groupPaper = new f.Item(); groupPaper.libraryID = 2; groupPaper.key = f.parent.key;
+  f.items.set(groupPaper.id, groupPaper);
+  const groupCollection = { id: 20, libraryID: 2, key: f.a.key, name: f.a.name,
+    getChildItems: () => [groupPaper.id] };
+  f.Z.Libraries.getAll = () => [f.library, group];
+  const personalCollections = f.Z.Collections.getByLibrary(1);
+  f.Z.Collections.getByLibrary = libraryID => libraryID === 1 ? personalCollections : [groupCollection];
+  const groupProject = f.repo.projects().find(project => project.libraryID === 2);
+  const rows = await f.repo.loadProjects([f.projectA, groupProject], { [f.projectA.id]: false, [groupProject.id]: false });
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => [row.libraryID, row.id, row.key, row.projectID]), [
+    [1, f.parent.id, f.parent.key, f.projectA.id], [2, groupPaper.id, f.parent.key, groupProject.id],
+  ]);
+  assert.notEqual(rows[0].project.id, rows[1].project.id);
+  assert.notEqual(rows[0].itemURL, rows[1].itemURL);
+  assert.equal(rows[1].project.library.libraryType, 'group');
+});
+
+test('multi-project loading snapshots all schemas and recursive preferences before sequential reads begin', async () => {
+  const f = fixture(), calls = [];
+  const sharedFields = [{ id: 'remarks', label: '原始名称', aliases: ['原始别名'], visible: true }];
+  f.projectA.fields = f.projectB.fields = sharedFields;
+  const recursive = { [f.projectA.id]: false, [f.projectB.id]: true };
+  f.repo.loadProject = async (project, descendants) => {
+    calls.push([project.id, descendants]);
+    sharedFields[0].label = '读取中改名'; sharedFields[0].aliases.push('读取中新增');
+    recursive[f.projectB.id] = false;
+    return [{ id: f.parent.id, key: f.parent.key, values: {} }];
+  };
+  const rows = await f.repo.loadProjects([f.projectA, f.projectB], recursive);
+  assert.deepEqual(calls, [[f.projectA.id, false], [f.projectB.id, true]]);
+  assert.deepEqual(rows.map(row => row.project.fields[0].label), ['原始名称', '原始名称']);
+  assert.deepEqual(rows.map(row => row.project.fields[0].aliases), [['原始别名'], ['原始别名']]);
+  assert.notEqual(rows[0].project.fields, rows[1].project.fields);
+});
+
+test('duplicate, missing and mismatched multi-project selections reject before loading any project', async () => {
+  const f = fixture();
+  let loads = 0;
+  f.repo.loadProject = async () => { loads++; return []; };
+  for (const projects of [[f.projectA, f.projectA], [f.projectA, null],
+    [f.projectA, { ...f.projectB, id: 'user:collection:MISSING1' }],
+    [f.projectA, { ...f.projectB, libraryID: 2 }], [f.projectA, { ...f.projectB, collectionKey: 'MISSING1' }]]) {
+    await assert.rejects(f.repo.loadProjects(projects), /项目|重复/);
+  }
+  assert.equal(loads, 0);
+  assert.deepEqual(await f.repo.loadProjects([]), []);
+  await assert.rejects(f.repo.loadProjects(null), /无效/);
+  await assert.rejects(f.repo.loadProjects([f.projectA], null), /无效/);
+});
+
+test('a later project read failure rejects the complete load and never returns an earlier partial project', async () => {
+  const f = fixture(), calls = [];
+  f.repo.loadProject = async project => {
+    calls.push(project.id);
+    if (project.id === f.projectB.id) throw new Error('synthetic second-project read failure');
+    return [{ id: f.parent.id, key: f.parent.key, values: { remarks: '前一个项目' } }];
+  };
+  await assert.rejects(f.repo.loadProjects([f.projectA, f.projectB]), /second-project read failure/);
+  assert.deepEqual(calls, [f.projectA.id, f.projectB.id]);
+  assert.equal(f.parent.notes.length, 0);
+});
+
+test('a row tagged with another project cannot be saved or imported and causes zero transactions or writes', async () => {
+  const f = fixture();
+  const row = { ...f.row, projectID: f.projectA.id };
+  let transactions = 0, writes = 0;
+  f.Z.DB.executeTransaction = async callback => { transactions++; return callback(); };
+  f.Item.prototype.save = async () => { writes++; throw new Error('must never save a mismatched project row'); };
+  await assert.rejects(f.repo.saveFields(f.projectB, row, { remarks: '不能写入乙项目' }, { remarks: '' }), /另一个项目/);
+  await assert.rejects(f.repo.saveField(f.projectB, row, 'remarks', '不能写入乙项目', ''), /另一个项目/);
+  await assert.rejects(f.repo.importRows(f.projectB, [
+    { row: f.row, changes: { remarks: '之前的合法行' }, expected: { remarks: '' } },
+    { row: { ...row, id: row.id + 100, key: 'OTHERKEY' }, changes: { remarks: '错误项目行' }, expected: { remarks: '' } },
+  ]), /另一个项目/);
+  assert.equal(transactions, 0);
+  assert.equal(writes, 0);
+  assert.equal(f.parent.notes.length, 0);
+  assert.equal(f.items.size, 1);
+});
+
+test('a row tagged with its matching project remains editable and importable', async () => {
+  const f = fixture(), row = { ...f.row, projectID: f.projectA.id };
+  await f.repo.saveField(f.projectA, row, 'remarks', '正确项目内容', '');
+  await f.repo.importRows(f.projectA, [{ row, changes: { remarks: '正确项目导入' }, expected: { remarks: '正确项目内容' } }]);
+  assert.equal((await f.repo.noteFor(f.parent, f.projectA)).values.remarks, '正确项目导入');
+  assert.equal((await f.repo.noteFor(f.parent, f.projectB)).values.remarks, '');
+});
 test('normal LitMatrix notes with the same title are never selected or overwritten', async () => {
   const f = fixture();
   const old = new f.Item('note'); old.parentID = f.parent.id;
@@ -245,6 +367,84 @@ test('current collection uses the host window and plural selection API on Zotero
   assert.equal(f.repo.currentProject().id, f.projectA.id);
   f.Z.ProjectLitMatrix.hostWindow.ZoteroPane.getSelectedCollections = () => [f.a, f.a];
   assert.equal(f.repo.currentProject(), null);
+});
+
+test('project tree metadata resolves parent keys within each library even with duplicate names and local numeric IDs', () => {
+  const f = fixture();
+  const libraries = [
+    { libraryID: 1, libraryType: 'user', name: 'Fixture Library' },
+    { libraryID: 2, libraryType: 'group', groupID: 200, name: 'Fixture Library' },
+    { libraryID: 3, libraryType: 'group', groupID: 300, name: 'Empty Group' },
+    { libraryID: 4, libraryType: 'publications', name: 'Unsupported Library' },
+  ];
+  const collection = (libraryID, id, key, parentID = null) => ({ libraryID, id, key, parentID, name: '同名分类' });
+  const byLibrary = new Map([
+    [1, [collection(1, 10, 'USERROOT'), collection(1, 11, 'USERCHLD', 10), collection(1, 12, 'ORPHAN01', 99)]],
+    [2, [collection(2, 10, 'GRPROOT1'), collection(2, 11, 'GRPCHILD', 10)]],
+    [3, []],
+  ]);
+  f.Z.Libraries.getAll = () => libraries;
+  f.Z.Collections.getByLibrary = libraryID => {
+    assert.notEqual(libraryID, 4, 'unsupported libraries are excluded before collection access');
+    return byLibrary.get(libraryID);
+  };
+  const projects = f.repo.projects();
+  assert.equal(projects.length, 5);
+  assert.deepEqual(projects.map(project => [project.libraryID, project.collectionKey, project.parentKey, project.libraryName, project.libraryType]), [
+    [1, 'USERROOT', null, 'Fixture Library', 'user'],
+    [1, 'USERCHLD', 'USERROOT', 'Fixture Library', 'user'],
+    [1, 'ORPHAN01', null, 'Fixture Library', 'user'],
+    [2, 'GRPROOT1', null, 'Fixture Library', 'group'],
+    [2, 'GRPCHILD', 'GRPROOT1', 'Fixture Library', 'group'],
+  ]);
+  assert.equal(projects[1].path, '同名分类 / 同名分类');
+  assert.equal(projects[4].path, '同名分类 / 同名分类');
+  assert.equal(new Set(projects.map(project => project.id)).size, projects.length);
+});
+
+test('currentProjects recognizes every selected native collection in stable order and removes duplicate and unavailable identities', () => {
+  const f = fixture();
+  const projects = f.repo.projects();
+  f.Z.ProjectLitMatrix = { hostWindow: { closed: false, ZoteroPane: {
+    getSelectedCollections: () => [projects[1].collection, projects[0].collection, projects[1].collection,
+      { libraryID: 99, key: projects[0].collectionKey }, null, { libraryID: 1, key: 'MISSING1' }],
+    getSelectedCollection() { throw new Error('must not call single-selection API for plural results'); },
+  } } };
+  assert.deepEqual(f.repo.currentProjects().map(project => project.id), [projects[1].id, projects[0].id]);
+  assert.equal(f.repo.currentProject(), null, 'legacy API does not choose one item from a native multi-selection');
+  f.Z.ProjectLitMatrix.hostWindow.ZoteroPane.getSelectedCollections = () => [f.a, f.a];
+  assert.equal(f.repo.currentProjects().length, 1);
+  assert.equal(f.repo.currentProject(), null, 'legacy single-selection behavior stays unchanged for duplicate native entries');
+});
+
+test('currentProjects preserves cross-library collections with the same key and falls back to older single-selection APIs', () => {
+  const f = fixture();
+  const group = { libraryID: 2, libraryType: 'group', groupID: 200, name: 'Fixture Group' };
+  const groupCollection = { id: 20, libraryID: 2, key: f.a.key, name: f.a.name };
+  f.Z.Libraries.getAll = () => [f.library, group];
+  const personalCollections = f.Z.Collections.getByLibrary(1);
+  f.Z.Collections.getByLibrary = libraryID => libraryID === 1 ? personalCollections : [groupCollection];
+  f.Z.getMainWindow = () => ({ ZoteroPane: { getSelectedCollections: () => [groupCollection, f.a] } });
+  assert.deepEqual(f.repo.currentProjects().map(project => project.id), ['group:200:collection:PROJECTA', f.projectA.id]);
+  f.Z.getMainWindow = () => ({ ZoteroPane: { getSelectedCollection: () => f.a } });
+  assert.deepEqual(f.repo.currentProjects().map(project => project.id), [f.projectA.id]);
+  assert.equal(f.repo.currentProject().id, f.projectA.id);
+});
+
+test('currentProjects returns an empty list for empty, unsupported, missing or unreadable native selections', () => {
+  const f = fixture();
+  for (const pane of [
+    {},
+    { getSelectedCollections: () => [], getSelectedCollection: () => f.a },
+    { getSelectedCollections: () => [{ libraryID: 99, key: f.a.key }] },
+    { getSelectedCollections: () => { throw new Error('selection unavailable'); } },
+    { getSelectedCollection: () => null },
+  ]) {
+    f.Z.getMainWindow = () => ({ ZoteroPane: pane });
+    assert.deepEqual(f.repo.currentProjects(), []);
+  }
+  f.Z.getMainWindow = () => null;
+  assert.deepEqual(f.repo.currentProjects(), []);
 });
 
 test('custom fields save independently by project and survive label changes', async () => {
