@@ -440,18 +440,34 @@ async function selectProjects(targets, options = {}) {
   if (changed) state.selected.clear();
   highlightManager?.clear(); syncControls(); await reload({ reset: changed }); return true;
 }
+function scrollToProject(id) {
+  if (state.view !== "table" || state.loading || state.loadError || $("#projectGroups").hidden) return false;
+  const section = [...document.querySelectorAll("[data-project-group]")].find(group => group.dataset.projectGroup === id);
+  const results = $("#results");
+  if (!section || typeof section.getBoundingClientRect !== "function" || typeof results.getBoundingClientRect !== "function") return false;
+  // Scroll only the table viewport. scrollIntoView can also move the page or
+  // pan sideways when the user is reading columns far to the right.
+  const left = results.scrollLeft;
+  const top = section.getBoundingClientRect().top - results.getBoundingClientRect().top
+    + results.scrollTop - (results.clientTop || 0);
+  highlightManager?.clear();
+  results.scrollTop = Math.max(0, top);
+  results.scrollLeft = left;
+  return true;
+}
 async function focusProject(id) {
   const project = state.projects.find(project => project.id === id && state.projectIDs.includes(id));
   if (!project) throw new Error("此项目不在当前选择中。");
-  if (project.id === state.project?.id) return true;
+  if (state.loading) { toast("正在读取文献，完成后即可定位项目。"); return false; }
   if (state.saving || layoutBusy() || projectPicker?.isOpen() || displayManager?.isOpen() || tableManager?.isOpen()
     || aiManager?.isOpen() || batchManager?.isOpen() || fieldManager?.dialog?.open || $("#templateDialog").open) {
     toast("请先关闭当前窗口，再更改操作项目。"); return false;
   }
   if (state.editing && !closeEditor()) return false;
+  if (project.id === state.project?.id) { scrollToProject(id); return true; }
   const previous = state.project; state.project = project;
   try { savePrefs(); } catch (error) { state.project = previous; throw error; }
-  syncControls(); render(); return true;
+  syncControls(); render(); scrollToProject(id); return true;
 }
 function renderProjectTabs() {
   $("#projectTabs").hidden = state.projectIDs.length < 2;

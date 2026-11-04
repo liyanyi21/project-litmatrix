@@ -2069,3 +2069,110 @@ test('a failed toolbar preference write restores the visible state and guidance 
     assert.equal(f.logs.length, 2);
   } finally { f.cleanup(); }
 });
+
+function projectNavigationGeometry(f) {
+  const results = f.document.querySelector('#results'), offsets = new Map([[PROJECT_A, 0], [PROJECT_B, 1400]]);
+  results.getBoundingClientRect = () => ({ top: 80 });
+  Object.defineProperty(results, 'clientTop', { configurable: true, value: 1 });
+  const measure = element => {
+    if (element.localName === 'section') element.getBoundingClientRect = () => ({ top: 81 + (offsets.get(element.dataset.projectGroup) || 0) - (results.scrollTop || 0) });
+    return element;
+  };
+  for (const element of f.document.querySelectorAll('[data-project-group]')) measure(element);
+  const create = f.document.createElement.bind(f.document);
+  f.document.createElement = (...args) => measure(create(...args));
+  return results;
+}
+
+test('project tabs switch operation context and scroll to the matching table without horizontal panning', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    await selectBothProjects(f);
+    const results = projectNavigationGeometry(f);
+    results.scrollTop = 350; results.scrollLeft = 980;
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    assert.equal(f.run('state.project.id'), PROJECT_B);
+    assert.equal(results.scrollTop, 1400);
+    assert.equal(results.scrollLeft, 980);
+    assert.deepEqual(displayedProjects(f), [PROJECT_A, PROJECT_B]);
+    assert.equal(f.prefs().lastProject, PROJECT_B);
+    assert.equal(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`).getAttribute('aria-pressed'), 'true');
+    results.scrollTop = 1670;
+    await f.run('reload()');
+    assert.equal(results.scrollTop, 1670, 'background refresh must not repeat an earlier navigation');
+    assert.equal(results.scrollLeft, 980);
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_A}"]`));
+    assert.equal(results.scrollTop, 0);
+    assert.equal(results.scrollLeft, 980);
+    assert.equal(f.saves.length + f.batchSaves.length + f.importSaves.length + f.apiCalls.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('clicking the current project again locates its table without rebuilding it or changing saved data', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    await selectBothProjects(f);
+    const results = projectNavigationGeometry(f), cell = projectCell(f, PROJECT_A, 'remarks');
+    const before = f.prefs();
+    results.scrollTop = 900; results.scrollLeft = 560;
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_A}"]`));
+    assert.equal(results.scrollTop, 0);
+    assert.equal(results.scrollLeft, 560);
+    assert.equal(projectCell(f, PROJECT_A, 'remarks'), cell);
+    assert.deepEqual(f.prefs(), before);
+    assert.equal(f.loads.length, 3);
+  } finally { f.cleanup(); }
+});
+
+test('project navigation respects dirty drafts, modals and loading even when the current project is clicked', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    await selectBothProjects(f);
+    const results = projectNavigationGeometry(f);
+    results.scrollTop = 700; results.scrollLeft = 340;
+    await f.dblclick(projectCell(f, PROJECT_A, 'remarks'));
+    const editor = f.document.querySelector('#inlineValue'); editor.value = '尚未保存';
+    f.window.confirm = () => false;
+    assert.equal(await f.run(`focusProject('${PROJECT_A}')`), false);
+    assert.equal(await f.run(`focusProject('${PROJECT_B}')`), false);
+    assert.equal(results.scrollTop, 700);
+    assert.equal(f.document.querySelector('#inlineValue'), editor);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    f.run('closeEditor(true)');
+    await f.click(f.document.querySelector('#displayOptions'));
+    assert.equal(await f.run(`focusProject('${PROJECT_A}')`), false);
+    assert.equal(results.scrollTop, 700);
+    f.run('displayManager.close(true); state.loading = true');
+    assert.equal(await f.run(`focusProject('${PROJECT_B}')`), false);
+    assert.equal(results.scrollTop, 700);
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+  } finally { f.cleanup(); }
+});
+
+test('failed project preference saves never jump or change the active operation project', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    await selectBothProjects(f);
+    const results = projectNavigationGeometry(f);
+    results.scrollTop = 800; results.scrollLeft = 910;
+    f.run('Z.Prefs.set = () => { throw new Error("模拟保存失败"); }');
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    assert.equal(f.run('state.project.id'), PROJECT_A);
+    assert.equal(results.scrollTop, 800); assert.equal(results.scrollLeft, 910);
+    assert.equal(f.logs.length, 1);
+  } finally { f.cleanup(); }
+});
+
+test('mindmap project switching does not scroll the hidden table viewport', async () => {
+  const f = await ui({ saved: multiProjectPrefs() });
+  try {
+    await selectBothProjects(f);
+    const results = projectNavigationGeometry(f);
+    await f.click(f.document.querySelector('#viewMindmap'));
+    results.scrollTop = 210; results.scrollLeft = 450;
+    await f.click(f.document.querySelector(`[data-active-project="${PROJECT_B}"]`));
+    assert.equal(f.run('state.project.id'), PROJECT_B);
+    assert.equal(f.run('mindmapManager.project.id'), PROJECT_B);
+    assert.equal(results.scrollTop, 210); assert.equal(results.scrollLeft, 450);
+  } finally { f.cleanup(); }
+});
